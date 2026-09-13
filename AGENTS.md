@@ -53,6 +53,9 @@ Maximum minimalism; the code speaks for itself.
 - `atoms.py` is the code leaf (`action`); `ext.py` is the extension seam for custom node-kinds.
 - Core `fedotmas` is provider-free (no LLM). Backends, agents, and `PromptRule` live in
   `fedotmas-llm`; system synthesis lives in `fedotmas-meta`.
+- `web/` is a separate Deno workspace, not a uv package: it spawns `benchmarks/swarm/run.py`
+  and reads the run's `SqliteStore`. It has its own `deno task verify`; the Python verify block
+  above does not cover it.
 
 ## Tests
 

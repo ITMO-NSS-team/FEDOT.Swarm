@@ -29,6 +29,7 @@ uv sync --all-packages
 - [`fedotmas`](packages/fedotmas): the engine and typed SDK.
 - [`fedotmas-llm`](packages/fedotmas-llm): the LLM extension. Agents, provider backends, serving. Early.
 - [`fedotmas-meta`](packages/fedotmas-meta): the meta-agent that builds systems from a task description. Early.
+- [`web`](web): the demonstration front end. Compose a swarm, watch it argue on an influence graph, and see what it spent. Deno and Fresh, not part of the Python workspace.
 
 ## Articles
 

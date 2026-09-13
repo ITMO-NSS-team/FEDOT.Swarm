@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from fedotmas import Plugin
 from fedotmas.engine import PluginDispatcher, SqliteStore, View
 from fedotmas.engine.contract import Fact, Node, Result
+from fedotmas.engine.report import StepReport
 from fedotmas.ext.plugins import ConcurrencyLimit, Retry
 from fedotmas_llm import Price, SpendLimit
 from fedotmas_llm.adapters.pydantic_ai import PydanticAI
@@ -77,6 +78,34 @@ class Watch(Plugin):
 
     async def on_error(self, node: Node, error: Fact, view: View) -> None:
         self.errors[node.describe().name] += 1
+
+
+class Tape(Plugin):
+    """Appends what the run has spent so far after every superstep. The store keeps facts and
+    not meters, and the report only lands once the run is over, so without this a reader
+    watching the file has the conversation but no bill."""
+
+    def __init__(self, path: Path, backend: PydanticAI, price: Price) -> None:
+        self._path = path
+        self._backend = backend
+        self._price = price
+        path.write_text("")
+
+    async def after_step(self, report: StepReport) -> None:
+        usage = self._backend.usage
+        line = json.dumps(
+            {
+                "index": report.index,
+                "fired": len(report.fired),
+                "requests": usage.requests,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "usd": round(self._price.of(usage), 8),
+                "at": round(time.time(), 3),
+            }
+        )
+        with self._path.open("a") as handle:
+            handle.write(line + "\n")
 
 
 def handwritten(n: int) -> SystemSpec:
@@ -164,15 +193,20 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
 
     spec = composed.spec if composed else fallback
     cast = sorted(spec.fill["personas"])
+    # before the run, not after: a composed cast is otherwise never persisted, and a reader
+    # watching the store mid-run has the posts but not the characters that produced them
+    Path(f"{args.db}.spec.json").write_text(spec.model_dump_json(indent=2))
     board = assemble(spec, Catalog(preset))
     watch = Watch()
     limit = _capped(backend, args)
+    price = Price(args.price_in, args.price_out)
     plugins = PluginDispatcher(
         # only HTTP failures are worth another attempt: a 429 or a 5xx clears, a bad prompt
         # or a blown token budget just repeats. SpendLimit sits under ConcurrencyLimit so it
         # checks the cap where the call actually leaves, and over Watch so a skipped node is
         # not counted as an attempt
         [
+            Tape(Path(f"{args.db}.usage.jsonl"), backend, price),
             Retry(args.retries, on=ModelHTTPError),
             ConcurrencyLimit(args.concurrency),
             *([limit] if limit else []),
@@ -207,7 +241,6 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
         return sum(1 for name in step.fired if name in voices)
 
     swarm_usage = _usage(backend)
-    price = Price(args.price_in, args.price_out)
     # a node the budget skipped is armed and reported as fired but never reaches Watch, so
     # it is not an invocation for the retry arithmetic
     skipped = limit.skipped if limit else 0
