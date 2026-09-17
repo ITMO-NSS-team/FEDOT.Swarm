@@ -293,6 +293,46 @@ select {
   font-size: .8125rem;
 }
 
+.criterion-row {
+  grid-template-columns: minmax(0, 1fr) 90px 44px;
+  align-items: center;
+  gap: 8px;
+}
+
+.criterion-header {
+  color: var(--muted);
+  font-size: .75rem;
+  font-weight: 550;
+}
+
+.criterion-header span:nth-child(2) {
+  text-align: center;
+}
+
+.criterion-row .criterion-weight {
+  text-align: center;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: var(--hover);
+  color: var(--danger);
+}
+
 .form-error {
   margin: 0;
   color: var(--danger);

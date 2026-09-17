@@ -2,6 +2,7 @@ import { useState } from "preact/hooks";
 import { models, paperModels, type RunRequest } from "@/lib/types.ts";
 import {
   DEFAULT_MAX_TOKENS,
+  MAX_CRITERIA,
   MAX_MAX_TOKENS,
   MIN_MAX_TOKENS,
   type PaperBackend,
@@ -12,6 +13,20 @@ type Axis = "usd" | "tokens" | "requests";
 type Mode = "topic" | "paperbench";
 type PaperSource = "tex" | "pdf";
 
+interface Criterion {
+  requirements: string;
+  weight: number;
+}
+
+type CriterionRow = Criterion & { key: number };
+
+let criterionSeq = 0;
+const newCriterion = (): CriterionRow => ({
+  key: criterionSeq++,
+  requirements: "",
+  weight: 1,
+});
+
 const axes: {
   key: Axis;
   label: string;
@@ -19,10 +34,10 @@ const axes: {
   step: number;
   preset: number;
 }[] = [
-    { key: "usd", label: "Dollars", unit: "USD", step: 0.0001, preset: 0.002 },
-    { key: "tokens", label: "Tokens", unit: "tokens", step: 100, preset: 20000 },
-    { key: "requests", label: "Requests", unit: "requests", step: 1, preset: 40 },
-  ];
+  { key: "usd", label: "Dollars", unit: "USD", step: 0.0001, preset: 0.002 },
+  { key: "tokens", label: "Tokens", unit: "tokens", step: 100, preset: 20000 },
+  { key: "requests", label: "Requests", unit: "requests", step: 1, preset: 40 },
+];
 
 const MIN_MINUTES = 2;
 const MAX_MINUTES = 20;
@@ -53,6 +68,7 @@ export function RunComposer() {
   const [texFiles, setTexFiles] = useState<File[]>([]);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [rubricFile, setRubricFile] = useState<File | null>(null);
+  const [criteria, setCriteria] = useState<CriterionRow[]>([]);
   // Only spent under --backend openrouter: claude-code runs on the subscription and has
   // nothing here to cap.
   const [paperAxis, setPaperAxis] = useState<Axis>("usd");
@@ -85,6 +101,17 @@ export function RunComposer() {
     setPaperModel(next === "openrouter" ? models[0] : paperModels[0]);
   };
 
+  const addCriterion = () => {
+    if (criteria.length >= MAX_CRITERIA) return;
+    setCriteria([...criteria, newCriterion()]);
+  };
+  const removeCriterion = (key: number) => {
+    setCriteria(criteria.filter((c) => c.key !== key));
+  };
+  const updateCriterion = (key: number, patch: Partial<Criterion>) => {
+    setCriteria(criteria.map((c) => c.key === key ? { ...c, ...patch } : c));
+  };
+
   const startTopic = async () => {
     const request: RunRequest = {
       topic,
@@ -111,13 +138,16 @@ export function RunComposer() {
 
   const startPaperBench = async () => {
     if (paperSource === "tex" && texFiles.length === 0) {
-      throw new Error("Attach the paper's LaTeX source (a folder of .tex files)");
+      throw new Error(
+        "Attach the paper's LaTeX source (a folder of .tex files)",
+      );
     }
     if (paperSource === "pdf" && !pdfFile) {
       throw new Error("Attach the paper's PDF");
     }
-    if (!rubricFile) {
-      throw new Error("Attach the rubric branch JSON");
+    const filledCriteria = criteria.filter((c) => c.requirements.trim());
+    if (!rubricFile && filledCriteria.length === 0) {
+      throw new Error("Attach the rubric branch JSON, add criteria, or both");
     }
     const budget = paperBackend === "openrouter"
       ? {
@@ -147,7 +177,18 @@ export function RunComposer() {
     } else {
       form.set("pdf", pdfFile!);
     }
-    form.set("rubric", rubricFile);
+    if (rubricFile) form.set("rubric", rubricFile);
+    if (filledCriteria.length > 0) {
+      form.set(
+        "criteria",
+        JSON.stringify(
+          filledCriteria.map((c) => ({
+            requirements: c.requirements.trim(),
+            weight: c.weight,
+          })),
+        ),
+      );
+    }
     const response = await fetch("/api/paperbench", {
       method: "POST",
       body: form,
@@ -231,7 +272,11 @@ export function RunComposer() {
               </label>
               <fieldset class="field limit">
                 <legend>Source</legend>
-                <div class="segmented" role="group" aria-label="Paper source format">
+                <div
+                  class="segmented"
+                  role="group"
+                  aria-label="Paper source format"
+                >
                   <button
                     type="button"
                     aria-pressed={paperSource === "tex"}
@@ -250,9 +295,9 @@ export function RunComposer() {
                 <p class="hint">
                   {paperSource === "tex"
                     ? "Preferred: exact math, no extraction noise."
-                    : "Fallback for when the LaTeX source is not at hand — text "
-                      + "extraction only (no OCR), so math and layout survive worse "
-                      + "than they do from the source."}
+                    : "Fallback for when the LaTeX source is not at hand — text " +
+                      "extraction only (no OCR), so math and layout survive worse " +
+                      "than they do from the source."}
                 </p>
               </fieldset>
               {paperSource === "tex"
@@ -261,30 +306,35 @@ export function RunComposer() {
                     <span>Paper LaTeX source</span>
                     <input
                       type="file"
-                      // deno-lint-ignore no-explicit-any
-                      {...({ webkitdirectory: true, directory: true } as any)}
+                      {
+                        // deno-lint-ignore no-explicit-any
+                        ...({ webkitdirectory: true, directory: true } as any)
+                      }
                       multiple
                       onChange={(e) => {
                         const files = Array.from(
                           (e.target as HTMLInputElement).files ?? [],
                         ).filter((f) =>
-                          (f.webkitRelativePath || f.name).toLowerCase().endsWith(
-                            ".tex",
-                          )
+                          (f.webkitRelativePath || f.name).toLowerCase()
+                            .endsWith(
+                              ".tex",
+                            )
                         );
                         setTexFiles(files);
                       }}
                     />
                     <p class="hint">
                       {texFiles.length > 0
-                        ? `${texFiles.length} .tex file${texFiles.length === 1 ? "" : "s"
-                        } — ${Math.round(
-                          texFiles.reduce((n, f) => n + f.size, 0) / 1024,
-                        )
+                        ? `${texFiles.length} .tex file${
+                          texFiles.length === 1 ? "" : "s"
+                        } — ${
+                          Math.round(
+                            texFiles.reduce((n, f) => n + f.size, 0) / 1024,
+                          )
                         } KB`
-                        : "Pick the folder holding the paper's .tex source (any "
-                        + "entry-file name — the one with \\documentclass is found "
-                        + "automatically). Read directly, no OCR: only .tex files are sent."}
+                        : "Pick the folder holding the paper's .tex source (any " +
+                          "entry-file name — the one with \\documentclass is found " +
+                          "automatically). Read directly, no OCR: only .tex files are sent."}
                     </p>
                   </label>
                 )
@@ -301,13 +351,15 @@ export function RunComposer() {
                     />
                     <p class="hint">
                       {pdfFile
-                        ? `${pdfFile.name} — ${Math.round(pdfFile.size / 1024)} KB`
+                        ? `${pdfFile.name} — ${
+                          Math.round(pdfFile.size / 1024)
+                        } KB`
                         : "The paper's PDF, e.g. straight from arXiv."}
                     </p>
                   </label>
                 )}
               <label class="field">
-                <span>Rubric branch JSON</span>
+                <span>Rubric branch JSON (optional)</span>
                 <input
                   type="file"
                   accept=".json,application/json"
@@ -318,11 +370,71 @@ export function RunComposer() {
                 />
                 <p class="hint">
                   {rubricFile
-                    ? `${rubricFile.name} — ${Math.round(rubricFile.size / 1024)
+                    ? `${rubricFile.name} — ${
+                      Math.round(rubricFile.size / 1024)
                     } KB`
-                    : "One branch object: requirements, weight, sub_tasks with leaves."}
+                    : "One branch object: requirements, weight, sub_tasks with leaves. " +
+                      "Skip this if you'd rather just write criteria below."}
                 </p>
               </label>
+              <fieldset class="field upload">
+                <legend>Custom criteria (optional)</legend>
+                <p class="hint">
+                  {rubricFile
+                    ? "Added alongside the uploaded rubric branch — both sets are graded together."
+                    : "Each line becomes its own graded leaf, with the weight it carries in the score."}
+                </p>
+                {criteria.length > 0 && (
+                  <div class="field-row criterion-row criterion-header">
+                    <span>Requirement</span>
+                    <span>Weight</span>
+                    <span />
+                  </div>
+                )}
+                {criteria.map((c) => (
+                  <div key={c.key} class="field-row criterion-row">
+                    <input
+                      class="criterion-text"
+                      value={c.requirements}
+                      placeholder="e.g. The model correctly samples noise"
+                      maxLength={500}
+                      onInput={(e) =>
+                        updateCriterion(c.key, {
+                          requirements: (e.target as HTMLInputElement).value,
+                        })}
+                    />
+                    <input
+                      type="number"
+                      class="criterion-weight"
+                      min={0.1}
+                      step={0.1}
+                      value={c.weight}
+                      aria-label="Weight"
+                      title="Weight"
+                      onInput={(e) =>
+                        updateCriterion(c.key, {
+                          weight: Number((e.target as HTMLInputElement).value),
+                        })}
+                    />
+                    <button
+                      type="button"
+                      class="icon-button"
+                      aria-label="Remove criterion"
+                      onClick={() => removeCriterion(c.key)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  class="secondary-button"
+                  onClick={addCriterion}
+                  disabled={criteria.length >= MAX_CRITERIA}
+                >
+                  + Add criterion
+                </button>
+              </fieldset>
             </fieldset>
           </div>
         )}
@@ -366,7 +478,9 @@ export function RunComposer() {
               : paperBackend === "openrouter"
               ? models
               : paperModels).map((name) => (
-                <option key={name} value={name}>{name.split("/").at(-1)}</option>
+                <option key={name} value={name}>
+                  {name.split("/").at(-1)}
+                </option>
               ))}
           </select>
         </label>
@@ -503,8 +617,8 @@ export function RunComposer() {
                 </div>
                 <p class="hint">
                   Required for OpenRouter — a run with all three at zero is
-                  refused. Nothing is called past the limit, so the round
-                  ends with the feed intact.
+                  refused. Nothing is called past the limit, so the round ends
+                  with the feed intact.
                 </p>
               </fieldset>
             )}
@@ -522,10 +636,10 @@ export function RunComposer() {
                     )}
                 />
                 <p class="hint">
-                  Response length cap per call. A persona reposts a whole
-                  file each round, and the judge answers with one verdict
-                  per rubric leaf in a single reply — raise this for a large
-                  rubric branch, or the judge can run out of room and fail.
+                  Response length cap per call. A persona reposts a whole file
+                  each round, and the judge answers with one verdict per rubric
+                  leaf in a single reply — raise this for a large rubric branch,
+                  or the judge can run out of room and fail.
                 </p>
               </label>
             )}

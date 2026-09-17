@@ -1,8 +1,10 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@^1";
 import { InvalidRequest } from "@/lib/validate.ts";
 import {
+  buildRubricBranch,
   DEFAULT_MAX_TOKENS,
   isPdf,
+  parseManualCriteria,
   parsePaperScalars,
   sanitizeTexPath,
   uploadLabel,
@@ -89,7 +91,8 @@ Deno.test("the backend picks which model list is valid, and defaults to claude-c
     InvalidRequest,
   );
   assertThrows(
-    () => parsePaperScalars({ ...scalars, backend: "openrouter", model: "haiku" }),
+    () =>
+      parsePaperScalars({ ...scalars, backend: "openrouter", model: "haiku" }),
     InvalidRequest,
   );
 });
@@ -136,7 +139,10 @@ Deno.test("a spend cap is zeroed under claude-code, kept under openrouter", () =
 
 Deno.test("max tokens defaults, and is bounded, regardless of backend", () => {
   assertEquals(parsePaperScalars(scalars).maxTokens, DEFAULT_MAX_TOKENS);
-  assertEquals(parsePaperScalars({ ...scalars, maxTokens: 12000 }).maxTokens, 12000);
+  assertEquals(
+    parsePaperScalars({ ...scalars, maxTokens: 12000 }).maxTokens,
+    12000,
+  );
   assertThrows(
     () => parsePaperScalars({ ...scalars, maxTokens: 10 }),
     InvalidRequest,
@@ -176,8 +182,14 @@ Deno.test("a branch without leaves or with bad leaves is refused", () => {
 
 Deno.test("a .tex path normalizes to forward slashes, rooted, no traversal", () => {
   assertEquals(sanitizeTexPath("main.tex"), "main.tex");
-  assertEquals(sanitizeTexPath("paper/sections/intro.tex"), "paper/sections/intro.tex");
-  assertEquals(sanitizeTexPath("paper\\sections\\intro.tex"), "paper/sections/intro.tex");
+  assertEquals(
+    sanitizeTexPath("paper/sections/intro.tex"),
+    "paper/sections/intro.tex",
+  );
+  assertEquals(
+    sanitizeTexPath("paper\\sections\\intro.tex"),
+    "paper/sections/intro.tex",
+  );
 });
 
 Deno.test("a path is refused without the .tex extension or with traversal", () => {
@@ -194,6 +206,72 @@ Deno.test("a PDF is told apart from other files by its magic bytes, not its name
   assertEquals(isPdf(new Uint8Array([0x25, 0x50, 0x44])), false); // too short
   assertEquals(isPdf(new TextEncoder().encode("not a pdf at all")), false);
   assertEquals(isPdf(new Uint8Array()), false);
+});
+
+Deno.test("empty or absent manual criteria parse to nothing", () => {
+  assertEquals(parseManualCriteria(undefined), []);
+  assertEquals(parseManualCriteria(null), []);
+  assertEquals(parseManualCriteria(""), []);
+  assertEquals(parseManualCriteria("[]"), []);
+});
+
+Deno.test("manual criteria parse from a JSON array string, trimmed", () => {
+  const criteria = parseManualCriteria(
+    JSON.stringify([
+      { requirements: "  Handles edge cases  ", weight: 2 },
+      { requirements: "Tests pass", weight: 1 },
+    ]),
+  );
+  assertEquals(criteria.length, 2);
+  assertEquals(criteria[0].requirements, "Handles edge cases");
+  assertEquals(criteria[0].weight, 2);
+});
+
+Deno.test("a malformed manual criterion is refused", () => {
+  for (
+    const bad of [
+      "not json",
+      "{}",
+      JSON.stringify([{ requirements: "  ", weight: 1 }]),
+      JSON.stringify([{ requirements: "ok", weight: 0 }]),
+      JSON.stringify([{ requirements: "ok", weight: -1 }]),
+      JSON.stringify([{ requirements: "ok" }]),
+      JSON.stringify(
+        Array.from({ length: 101 }, () => ({ requirements: "x", weight: 1 })),
+      ),
+    ]
+  ) {
+    assertThrows(() => parseManualCriteria(bad), InvalidRequest);
+  }
+});
+
+Deno.test("a rubric branch can be built from just manual criteria", () => {
+  const built = buildRubricBranch(null, [
+    { requirements: "Noise is sampled", weight: 2 },
+    { requirements: "Loss is computed", weight: 1 },
+  ]);
+  const leaves = validateRubricBranch(built);
+  assertEquals(leaves.length, 2);
+  assertEquals(leaves[0].id, "custom-1");
+});
+
+Deno.test("a rubric branch can combine an upload with manual criteria", () => {
+  const built = buildRubricBranch(branch, [
+    { requirements: "Also handles NaNs", weight: 1 },
+  ]);
+  const leaves = validateRubricBranch(built);
+  // the two leaves already inside `branch`, plus the one manual leaf
+  assertEquals(leaves.length, 3);
+  assertEquals(leaves.some((l) => l.id === "custom-1"), true);
+});
+
+Deno.test("an upload with no manual criteria passes through unchanged", () => {
+  const built = buildRubricBranch(branch, []);
+  assertEquals(built, branch);
+});
+
+Deno.test("neither an upload nor manual criteria is refused", () => {
+  assertThrows(() => buildRubricBranch(null, []), InvalidRequest);
 });
 
 Deno.test("the label prefers the title, then the upload's folder or file name", () => {

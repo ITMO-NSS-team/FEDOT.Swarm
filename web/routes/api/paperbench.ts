@@ -2,12 +2,14 @@ import { dirname, join } from "node:path";
 import { create, list, type PaperInputs } from "@/lib/paperbench.ts";
 import { newRunId, paperPaths } from "@/lib/paths.ts";
 import {
+  buildRubricBranch,
   isPdf,
   MAX_PDF_BYTES,
   MAX_RUBRIC_BYTES,
   MAX_TEX_FILE_BYTES,
   MAX_TEX_FILES,
   MAX_TEX_TOTAL_BYTES,
+  parseManualCriteria,
   parsePaperScalars,
   sanitizeTexPath,
   uploadLabel,
@@ -44,12 +46,13 @@ function folderLabel(relPaths: string[]): string | null {
   return segments.length > 1 ? segments[0] : segments[segments.length - 1];
 }
 
-/** A run from uploaded files: the rubric JSON is required, a paper source with it — either
- * a LaTeX source (one `.tex` file or a whole folder of them, an arXiv-style source tree,
- * sent as repeated `tex` fields each carrying its path relative to the folder as its
- * filename) or, when the LaTeX source is not at hand, a single `pdf` field. Everything is
- * saved under fixed names beside the run so the client's own paths never touch disk
- * unsanitized. */
+/** A run from uploaded files: rubric criteria (an uploaded rubric.json, hand-typed
+ * criteria in the `criteria` field, or both — at least one is required) plus a paper
+ * source — either a LaTeX source (one `.tex` file or a whole folder of them, an
+ * arXiv-style source tree, sent as repeated `tex` fields each carrying its path relative
+ * to the folder as its filename) or, when the LaTeX source is not at hand, a single `pdf`
+ * field. Everything is saved under fixed names beside the run so the client's own paths
+ * never touch disk unsanitized. */
 async function postUpload(req: Request) {
   let form: FormData;
   try {
@@ -71,32 +74,45 @@ async function postUpload(req: Request) {
   }
 
   const rubricFile = form.get("rubric");
-  if (!(rubricFile instanceof File) || rubricFile.size === 0) {
-    return Response.json(
-      { error: "Attach the rubric branch JSON to start a custom run" },
-      { status: 422 },
-    );
+  const hasRubricFile = rubricFile instanceof File && rubricFile.size > 0;
+  let uploaded: unknown = null;
+  if (hasRubricFile) {
+    const file = rubricFile as File;
+    if (file.size > MAX_RUBRIC_BYTES) {
+      return Response.json({ error: "Rubric file must be under 1 MB" }, {
+        status: 422,
+      });
+    }
+    try {
+      uploaded = JSON.parse(await file.text());
+    } catch {
+      return Response.json({ error: "Rubric file is not valid JSON" }, {
+        status: 422,
+      });
+    }
+    try {
+      validateRubricBranch(uploaded);
+    } catch (error) {
+      return failed(error, 422);
+    }
   }
-  if (rubricFile.size > MAX_RUBRIC_BYTES) {
-    return Response.json({ error: "Rubric file must be under 1 MB" }, {
-      status: 422,
-    });
+  let manualCriteria: ReturnType<typeof parseManualCriteria>;
+  try {
+    manualCriteria = parseManualCriteria(fields["criteria"]);
+  } catch (error) {
+    return failed(error, 422);
   }
   let rubric: unknown;
   try {
-    rubric = JSON.parse(await rubricFile.text());
-  } catch {
-    return Response.json({ error: "Rubric file is not valid JSON" }, {
-      status: 422,
-    });
-  }
-  try {
+    rubric = buildRubricBranch(uploaded, manualCriteria);
     validateRubricBranch(rubric);
   } catch (error) {
     return failed(error, 422);
   }
 
-  const texFiles = form.getAll("tex").filter((f): f is File => f instanceof File);
+  const texFiles = form.getAll("tex").filter((f): f is File =>
+    f instanceof File
+  );
   const pdfFile = form.get("pdf");
   const hasPdf = pdfFile instanceof File && pdfFile.size > 0;
   if (texFiles.length > 0 && hasPdf) {
@@ -159,7 +175,9 @@ async function postUpload(req: Request) {
         }
         if (file.size > MAX_TEX_FILE_BYTES) {
           return Response.json({
-            error: `${relPath} is larger than ${MAX_TEX_FILE_BYTES / 1024 / 1024} MB`,
+            error: `${relPath} is larger than ${
+              MAX_TEX_FILE_BYTES / 1024 / 1024
+            } MB`,
           }, { status: 422 });
         }
         total += file.size;
@@ -202,7 +220,8 @@ export const handler = define.handlers({
     const contentType = ctx.req.headers.get("content-type") ?? "";
     if (!contentType.includes("multipart/form-data")) {
       return Response.json({
-        error: "Attach the paper's LaTeX source and the rubric JSON as a multipart form",
+        error:
+          "Attach the paper's LaTeX source and the rubric JSON as a multipart form",
       }, { status: 400 });
     }
     return postUpload(ctx.req);

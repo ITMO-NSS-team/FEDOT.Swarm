@@ -120,7 +120,9 @@ export function parsePaperScalars(
   };
   const usd = bounded(input.usd, "usd", MAX_USD);
   const tokens = Math.round(bounded(input.tokens, "tokens", MAX_TOKENS));
-  const requests = Math.round(bounded(input.requests, "requests", MAX_REQUESTS));
+  const requests = Math.round(
+    bounded(input.requests, "requests", MAX_REQUESTS),
+  );
   const maxTokensRaw = Number(input.maxTokens ?? DEFAULT_MAX_TOKENS);
   if (
     !Number.isFinite(maxTokensRaw) || maxTokensRaw < MIN_MAX_TOKENS ||
@@ -161,6 +163,91 @@ export interface RubricLeaf {
   id: string;
   requirements: string;
   weight: number;
+}
+
+/** A hand-typed criterion, entered straight into the form instead of (or alongside) an
+ * uploaded rubric.json. */
+export interface ManualCriterion {
+  requirements: string;
+  weight: number;
+}
+
+export const MAX_CRITERIA = 100;
+
+/** Custom rubric leaves sent as a JSON array string in the `criteria` form field.
+ * Absent or empty input yields no criteria — a rubric file alone is still a valid run. */
+export function parseManualCriteria(raw: unknown): ManualCriterion[] {
+  if (raw === undefined || raw === null || raw === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    throw new InvalidRequest("Custom criteria must be a JSON array");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new InvalidRequest("Custom criteria must be a JSON array");
+  }
+  if (parsed.length > MAX_CRITERIA) {
+    throw new InvalidRequest(
+      `At most ${MAX_CRITERIA} custom criteria are accepted`,
+    );
+  }
+  return parsed.map((entry, i) => {
+    if (!entry || typeof entry !== "object") {
+      throw new InvalidRequest(`Custom criterion ${i + 1} is malformed`);
+    }
+    const record = entry as Record<string, unknown>;
+    const requirements = record["requirements"];
+    if (typeof requirements !== "string" || !requirements.trim()) {
+      throw new InvalidRequest(
+        `Custom criterion ${i + 1} needs requirements text`,
+      );
+    }
+    const weight = record["weight"];
+    if (typeof weight !== "number" || !Number.isFinite(weight) || weight <= 0) {
+      throw new InvalidRequest(
+        `Custom criterion ${i + 1} needs a positive weight`,
+      );
+    }
+    return { requirements: requirements.trim(), weight };
+  });
+}
+
+/** Combines an uploaded rubric branch with hand-typed criteria into the one branch
+ * object `run.py`'s `load_branch` (and `validateRubricBranch` below) expect. Either
+ * side may be empty, but not both. With nothing uploaded, the criteria become the
+ * leaves of a synthetic root; with an upload too, the upload becomes a sibling branch
+ * alongside the new leaves so both sets of requirements are graded together. */
+export function buildRubricBranch(
+  uploaded: unknown | null,
+  manual: ManualCriterion[],
+): unknown {
+  const manualLeaves = manual.map((c, i) => ({
+    id: `custom-${i + 1}`,
+    requirements: c.requirements,
+    weight: c.weight,
+    sub_tasks: [],
+  }));
+  if (!uploaded && manualLeaves.length === 0) {
+    throw new InvalidRequest(
+      "Add the rubric branch JSON, custom criteria, or both",
+    );
+  }
+  if (!uploaded) {
+    return {
+      id: "custom-root",
+      requirements: "Custom criteria",
+      weight: 1,
+      sub_tasks: manualLeaves,
+    };
+  }
+  if (manualLeaves.length === 0) return uploaded;
+  return {
+    id: "combined-root",
+    requirements: "Combined criteria",
+    weight: 1,
+    sub_tasks: [uploaded, ...manualLeaves],
+  };
 }
 
 function leavesOf(node: Record<string, unknown>): Record<string, unknown>[] {
