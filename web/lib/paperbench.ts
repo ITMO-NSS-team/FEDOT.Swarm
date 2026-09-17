@@ -53,9 +53,6 @@ export interface PaperReport {
   compose?: { attempts: number; fellBack: boolean } | null;
   swarmSeconds?: number;
   judgeSeconds?: number;
-  /** Only meaningful for a run started with `backend: "openrouter"`; `run.py` reports it
-   * empty for `claude-code`, which has no per-token cost to meter. */
-  backend?: string;
   usage?: { swarm?: PaperUsage; judge?: PaperUsage };
   score: number;
   leaves: RubricLeaf[];
@@ -75,7 +72,6 @@ export interface PaperRun {
   ranked: boolean;
   seats: number;
   compose: boolean;
-  backend: string;
   model: string;
   usd: number;
   tokens: number;
@@ -228,7 +224,7 @@ export function create(
   scalars: PaperScalars,
   inputs: PaperInputs = {},
 ): PaperRun {
-  const { timeoutSeconds, personas, rounds, ranked, seats, compose, backend, model } =
+  const { timeoutSeconds, personas, rounds, ranked, seats, compose, model } =
     scalars;
   const id = inputs.id ? runId(inputs.id) : newRunId();
   const paths = paperPaths(id);
@@ -243,7 +239,6 @@ export function create(
     ranked,
     seats,
     compose,
-    backend,
     model,
     usd: scalars.usd,
     tokens: scalars.tokens,
@@ -262,11 +257,17 @@ export function create(
     write: true,
     truncate: true,
   });
-  // Its own venv, not the workspace one: the harness's Python client needs Python 3.12
-  // and a local path source (the internal git host it normally comes from is not
-  // reachable here), neither of which the rest of the workspace should depend on.
-  const child = new Deno.Command("benchmarks/paperbench/.venv/bin/python", {
+  // Same workspace venv the free-topic swarm runs on (see runs.ts): paperbench dropped
+  // its own separate one once it stopped needing anything beyond fedotmas-llm's
+  // pydantic-ai extra and pymupdf (the `paperbench` dependency group).
+  const child = new Deno.Command("uv", {
     args: [
+      "run",
+      "--extra",
+      "pydantic-ai",
+      "--group",
+      "paperbench",
+      "python",
       "benchmarks/paperbench/run.py",
       "--paper",
       paper,
@@ -282,8 +283,6 @@ export function create(
       String(personas),
       "--rounds",
       String(rounds),
-      "--backend",
-      backend,
       "--model",
       model,
       ...(inputs.paperTex ? ["--paper-tex", inputs.paperTex] : []),

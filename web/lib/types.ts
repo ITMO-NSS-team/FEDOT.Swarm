@@ -85,8 +85,3 @@ export const models = [
   "openrouter:qwen/qwen3.7-flash",
   "openrouter:qwen/qwen3.8-flash",
 ] as const;
-
-/** Claude CLI model aliases, for the PaperBench mode: it runs through the harness's
- * `claude-code` provider (your own subscription), never through the OpenRouter models
- * above. */
-export const paperModels = ["haiku", "sonnet", "opus", "fable"] as const;

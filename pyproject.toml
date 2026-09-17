@@ -23,6 +23,10 @@ examples = [
   "pydantic-ai-slim[openai]>=1.106",
   "python-dotenv>=1.2.2",
 ]
+paperbench = [
+  # benchmarks/paperbench/run.py's own extra, only needed for --paper-pdf/parse_pdf.py
+  "pymupdf>=1.24",
+]
 
 [tool.uv]
 workspace.members = [ "packages/*" ]

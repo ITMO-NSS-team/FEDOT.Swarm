@@ -33,10 +33,9 @@ export function newRunId() {
   return `${stamp}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-/** Outside the repository on purpose: the coding-agent harness's `claude-code` provider
- * walks up from a session's cwd and loads any `AGENTS.md` it finds as project context,
- * and this repo's own (about the fedotmas engine, not about whatever paper is being
- * implemented) is pure noise for that session. */
+/** Outside the repository on purpose: a run's workdir can grow arbitrarily large (a
+ * cast's whole `SqliteStore` plus every judged variant), so it lives in a user cache
+ * directory rather than inside the checkout. */
 function paperWorkDirectory() {
   return resolve(
     Deno.env.get("FEDOTMAS_PAPERBENCH_WORKDIR") ??
@@ -61,9 +60,8 @@ export function paperPaths(id: string) {
     log: `${base}.log`,
     db,
     spec: `${db}.spec.json`,
-    /** Written only under `--backend openrouter` — `claude-code` has nothing metered to
-     * tape. Same JSONL-per-superstep shape `runPaths().usage` is, so the graph endpoint
-     * and `SwarmView`'s spend meter read either the same way. */
+    /** Same JSONL-per-superstep shape `runPaths().usage` is, so the graph endpoint and
+     * `SwarmView`'s spend meter read either the same way. */
     usage: `${db}.usage.jsonl`,
     /** Uploaded `tex/` (a LaTeX source tree) and `rubric_branch.json`, when the run was
      * started with files instead of a paper from `benchmarks/paperbench/data`. Fixed

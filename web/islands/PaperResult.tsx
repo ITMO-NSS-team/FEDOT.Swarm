@@ -109,11 +109,13 @@ export function PaperResult({ run: initial }: { run: PaperRun }) {
               }${report.compose.fellBack ? " (fell back to a plain cast)" : ""}`
               : ""}
           </p>
-          {report.backend === "openrouter" && report.usage?.judge && (
+          {report.usage?.judge && (
             <p class="hint">
-              Judge (not covered by the spend meter above): {report.usage.judge.requests}
+              Judge (not covered by the spend meter above):{" "}
+              {report.usage.judge.requests} req,{" "}
+              {report.usage.judge.inputTokens + report.usage.judge.outputTokens}
               {" "}
-              req, {report.usage.judge.inputTokens + report.usage.judge.outputTokens} tok
+              tok
             </p>
           )}
           {report.cast && report.cast.length > 1 && (

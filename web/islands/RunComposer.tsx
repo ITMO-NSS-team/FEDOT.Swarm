@@ -1,12 +1,10 @@
 import { useState } from "preact/hooks";
-import { models, paperModels, type RunRequest } from "@/lib/types.ts";
+import { models, type RunRequest } from "@/lib/types.ts";
 import {
   DEFAULT_MAX_TOKENS,
   MAX_CRITERIA,
   MAX_MAX_TOKENS,
   MIN_MAX_TOKENS,
-  type PaperBackend,
-  paperBackends,
 } from "@/lib/paper_upload.ts";
 
 type Axis = "usd" | "tokens" | "requests";
@@ -59,8 +57,7 @@ export function RunComposer() {
   const [amount, setAmount] = useState(0.002);
 
   // PaperBench state
-  const [paperBackend, setPaperBackend] = useState<PaperBackend>("claude-code");
-  const [paperModel, setPaperModel] = useState<string>(paperModels[0]);
+  const [paperModel, setPaperModel] = useState<string>(models[0]);
   const [paperPersonas, setPaperPersonas] = useState(3);
   const [minutes, setMinutes] = useState(10);
   const [title, setTitle] = useState("");
@@ -69,8 +66,6 @@ export function RunComposer() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [rubricFile, setRubricFile] = useState<File | null>(null);
   const [criteria, setCriteria] = useState<CriterionRow[]>([]);
-  // Only spent under --backend openrouter: claude-code runs on the subscription and has
-  // nothing here to cap.
   const [paperAxis, setPaperAxis] = useState<Axis>("usd");
   const [paperAmount, setPaperAmount] = useState(0.002);
   const [maxTokens, setMaxTokens] = useState(DEFAULT_MAX_TOKENS);
@@ -94,11 +89,6 @@ export function RunComposer() {
   const pickPaper = (next: Axis) => {
     setPaperAxis(next);
     setPaperAmount(axes.find((a) => a.key === next)!.preset);
-  };
-
-  const pickPaperBackend = (next: PaperBackend) => {
-    setPaperBackend(next);
-    setPaperModel(next === "openrouter" ? models[0] : paperModels[0]);
   };
 
   const addCriterion = () => {
@@ -149,13 +139,11 @@ export function RunComposer() {
     if (!rubricFile && filledCriteria.length === 0) {
       throw new Error("Attach the rubric branch JSON, add criteria, or both");
     }
-    const budget = paperBackend === "openrouter"
-      ? {
-        usd: paperAxis === "usd" ? paperAmount : 0,
-        tokens: paperAxis === "tokens" ? paperAmount : 0,
-        requests: paperAxis === "requests" ? paperAmount : 0,
-      }
-      : { usd: 0, tokens: 0, requests: 0 };
+    const budget = {
+      usd: paperAxis === "usd" ? paperAmount : 0,
+      tokens: paperAxis === "tokens" ? paperAmount : 0,
+      requests: paperAxis === "requests" ? paperAmount : 0,
+    };
     const form = new FormData();
     form.set("title", title);
     form.set("timeoutSeconds", String(minutes * 60));
@@ -164,7 +152,6 @@ export function RunComposer() {
     form.set("ranked", String(ranked));
     form.set("seats", String(seats));
     form.set("compose", String(compose));
-    form.set("backend", paperBackend);
     form.set("model", paperModel);
     form.set("usd", String(budget.usd));
     form.set("tokens", String(budget.tokens));
@@ -439,29 +426,6 @@ export function RunComposer() {
           </div>
         )}
 
-      {mode === "paperbench" && (
-        <fieldset class="field limit">
-          <legend>Backend</legend>
-          <div class="segmented" role="group" aria-label="PaperBench backend">
-            {paperBackends.map((option) => (
-              <button
-                key={option}
-                type="button"
-                aria-pressed={paperBackend === option}
-                onClick={() => pickPaperBackend(option)}
-              >
-                {option === "claude-code" ? "Claude CLI" : "OpenRouter"}
-              </button>
-            ))}
-          </div>
-          <p class="hint">
-            {paperBackend === "claude-code"
-              ? "Every persona is a claude CLI session on your own subscription — no metered key, no spend cap."
-              : "Every persona is a metered OpenRouter call, the same way the free-topic swarm runs — set a spend cap below."}
-          </p>
-        </fieldset>
-      )}
-
       <div class="field-row">
         <label class="field">
           <span>Model</span>
@@ -473,15 +437,11 @@ export function RunComposer() {
               else setPaperModel(value);
             }}
           >
-            {(mode === "topic"
-              ? models
-              : paperBackend === "openrouter"
-              ? models
-              : paperModels).map((name) => (
-                <option key={name} value={name}>
-                  {name.split("/").at(-1)}
-                </option>
-              ))}
+            {models.map((name) => (
+              <option key={name} value={name}>
+                {name.split("/").at(-1)}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -578,71 +538,64 @@ export function RunComposer() {
                   setMinutes(Number((e.target as HTMLInputElement).value))}
               />
               <p class="hint">
-                Minutes each attempt may spend before its turn is cut off.
-                {paperBackend === "claude-code"
-                  ? " There is no dollar cap here: it has no built-in spend limit, only this per-attempt one."
-                  : " A required spend cap is below — an OpenRouter run is never started without one."}
+                Minutes each attempt may spend before its turn is cut off. A
+                required spend cap is below — a run is never started without
+                one.
               </p>
             </label>
-            {paperBackend === "openrouter" && (
-              <fieldset class="field limit">
-                <legend>Stop after</legend>
-                <div class="segmented" role="group" aria-label="Limit axis">
-                  {axes.map((option) => (
-                    <button
-                      key={option.key}
-                      type="button"
-                      aria-pressed={paperAxis === option.key}
-                      onClick={() => pickPaper(option.key)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-                <div class="limit-amount">
-                  <input
-                    type="number"
-                    min={0}
-                    step={axes.find((a) => a.key === paperAxis)!.step}
-                    value={paperAmount}
-                    aria-label={`Limit in ${
-                      axes.find((a) => a.key === paperAxis)!.unit
-                    }`}
-                    onInput={(e) =>
-                      setPaperAmount(
-                        Number((e.target as HTMLInputElement).value),
-                      )}
-                  />
-                  <span>{axes.find((a) => a.key === paperAxis)!.unit}</span>
-                </div>
-                <p class="hint">
-                  Required for OpenRouter — a run with all three at zero is
-                  refused. Nothing is called past the limit, so the round ends
-                  with the feed intact.
-                </p>
-              </fieldset>
-            )}
-            {paperBackend === "openrouter" && (
-              <label class="field">
-                <span>Max tokens</span>
+            <fieldset class="field limit">
+              <legend>Stop after</legend>
+              <div class="segmented" role="group" aria-label="Limit axis">
+                {axes.map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    aria-pressed={paperAxis === option.key}
+                    onClick={() => pickPaper(option.key)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div class="limit-amount">
                 <input
                   type="number"
-                  min={MIN_MAX_TOKENS}
-                  max={MAX_MAX_TOKENS}
-                  value={maxTokens}
-                  onInput={(e) =>
-                    setMaxTokens(
-                      Number((e.target as HTMLInputElement).value),
-                    )}
+                  min={0}
+                  step={axes.find((a) => a.key === paperAxis)!.step}
+                  value={paperAmount}
+                  aria-label={`Limit in ${
+                    axes.find((a) => a.key === paperAxis)!.unit
+                  }`}
+                  onInput={(e) => setPaperAmount(
+                    Number((e.target as HTMLInputElement).value),
+                  )}
                 />
-                <p class="hint">
-                  Response length cap per call. A persona reposts a whole file
-                  each round, and the judge answers with one verdict per rubric
-                  leaf in a single reply — raise this for a large rubric branch,
-                  or the judge can run out of room and fail.
-                </p>
-              </label>
-            )}
+                <span>{axes.find((a) => a.key === paperAxis)!.unit}</span>
+              </div>
+              <p class="hint">
+                Required — a run with all three at zero is refused. Nothing is
+                called past the limit, so the round ends with the feed intact.
+              </p>
+            </fieldset>
+            <label class="field">
+              <span>Max tokens</span>
+              <input
+                type="number"
+                min={MIN_MAX_TOKENS}
+                max={MAX_MAX_TOKENS}
+                value={maxTokens}
+                onInput={(e) =>
+                  setMaxTokens(
+                    Number((e.target as HTMLInputElement).value),
+                  )}
+              />
+              <p class="hint">
+                Response length cap per call. A persona reposts a whole file
+                each round, and the judge answers with one verdict per rubric
+                leaf in a single reply — raise this for a large rubric branch,
+                or the judge can run out of room and fail.
+              </p>
+            </label>
           </>
         )}
 

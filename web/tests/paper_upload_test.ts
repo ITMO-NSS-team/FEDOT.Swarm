@@ -18,7 +18,8 @@ const scalars = {
   ranked: true,
   seats: 0,
   compose: true,
-  model: "haiku",
+  model: "openrouter:qwen/qwen3.7-flash",
+  usd: 0.01,
 };
 
 const branch = {
@@ -54,9 +55,8 @@ Deno.test("scalar bounds match the run the form offers", () => {
       { rounds: 0 },
       { seats: -1 },
       { model: "nope" },
-      { backend: "nope" },
-      { backend: "openrouter", usd: -1 },
-      { backend: "openrouter", tokens: 999_999_999 },
+      { usd: -1 },
+      { tokens: 999_999_999 },
     ]
   ) {
     assertThrows(
@@ -66,78 +66,23 @@ Deno.test("scalar bounds match the run the form offers", () => {
   }
 });
 
-Deno.test("the backend picks which model list is valid, and defaults to claude-code", () => {
-  const claudeCode = parsePaperScalars(scalars);
-  assertEquals(claudeCode.backend, "claude-code");
-  assertEquals(claudeCode.model, "haiku");
-
-  const openrouter = parsePaperScalars({
-    ...scalars,
-    backend: "openrouter",
-    model: "openrouter:qwen/qwen3.7-flash",
-    usd: 0.01,
-  });
-  assertEquals(openrouter.backend, "openrouter");
-  assertEquals(openrouter.model, "openrouter:qwen/qwen3.7-flash");
-
-  // an openrouter model id is not a claude-code alias, and vice versa
-  assertThrows(
-    () =>
-      parsePaperScalars({
-        ...scalars,
-        backend: "claude-code",
-        model: "openrouter:qwen/qwen3.7-flash",
-      }),
-    InvalidRequest,
-  );
-  assertThrows(
-    () =>
-      parsePaperScalars({ ...scalars, backend: "openrouter", model: "haiku" }),
-    InvalidRequest,
-  );
-});
-
-Deno.test("an openrouter run is refused without a spend cap; claude-code needs none", () => {
-  assertThrows(
-    () =>
-      parsePaperScalars({
-        ...scalars,
-        backend: "openrouter",
-        model: "openrouter:qwen/qwen3.7-flash",
-      }),
-    InvalidRequest,
-  );
+Deno.test("a run is refused without a spend cap", () => {
+  const { usd: _usd, ...noBudget } = scalars;
+  assertThrows(() => parsePaperScalars(noBudget), InvalidRequest);
   // any one of the three axes satisfies it
   for (const axis of ["usd", "tokens", "requests"] as const) {
-    const parsed = parsePaperScalars({
-      ...scalars,
-      backend: "openrouter",
-      model: "openrouter:qwen/qwen3.7-flash",
-      [axis]: 1,
-    });
+    const parsed = parsePaperScalars({ ...noBudget, [axis]: 1 });
     assertEquals(parsed[axis], 1);
   }
-  // claude-code has no metered cost, so it is never asked for one
-  assertEquals(parsePaperScalars(scalars).usd, 0);
 });
 
-Deno.test("a spend cap is zeroed under claude-code, kept under openrouter", () => {
-  const claudeCode = parsePaperScalars({ ...scalars, usd: 2, tokens: 1000 });
-  assertEquals(claudeCode.usd, 0);
-  assertEquals(claudeCode.tokens, 0);
-
-  const openrouter = parsePaperScalars({
-    ...scalars,
-    backend: "openrouter",
-    model: "openrouter:qwen/qwen3.7-flash",
-    usd: 2,
-    tokens: 1000,
-  });
-  assertEquals(openrouter.usd, 2);
-  assertEquals(openrouter.tokens, 1000);
+Deno.test("a spend cap passes through as given", () => {
+  const parsed = parsePaperScalars({ ...scalars, usd: 2, tokens: 1000 });
+  assertEquals(parsed.usd, 2);
+  assertEquals(parsed.tokens, 1000);
 });
 
-Deno.test("max tokens defaults, and is bounded, regardless of backend", () => {
+Deno.test("max tokens defaults, and is bounded", () => {
   assertEquals(parsePaperScalars(scalars).maxTokens, DEFAULT_MAX_TOKENS);
   assertEquals(
     parsePaperScalars({ ...scalars, maxTokens: 12000 }).maxTokens,

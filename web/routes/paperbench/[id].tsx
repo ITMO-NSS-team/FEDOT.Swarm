@@ -9,14 +9,18 @@ function money(value: number) {
   return value < 0.01 ? `$${value.toFixed(6)}` : `$${value.toFixed(4)}`;
 }
 
-/** Every run has the wall-clock cap; only an openrouter run started with a nonzero
- * usd/tokens/requests also has a spend cap, on top of it rather than instead of it (see
- * `run.py`'s `WallClock`). */
+/** Every run is per-call time-bounded (`--timeout`); a metered run also has a spend cap,
+ * on top of it rather than instead of it — the form never starts one without a cap set. */
 function cap(
-  run: { timeoutSeconds: number; backend: string; usd: number; tokens: number; requests: number },
+  run: {
+    timeoutSeconds: number;
+    usd: number;
+    tokens: number;
+    requests: number;
+  },
 ) {
   const minutes = `${Math.round(run.timeoutSeconds / 60)} min`;
-  if (run.backend !== "openrouter" || !(run.usd || run.tokens || run.requests)) {
+  if (!(run.usd || run.tokens || run.requests)) {
     return `${minutes} per session`;
   }
   const spend = run.usd

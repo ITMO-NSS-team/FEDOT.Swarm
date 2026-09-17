@@ -1,8 +1,5 @@
-import { models, paperModels } from "@/lib/types.ts";
+import { models } from "@/lib/types.ts";
 import { InvalidRequest } from "@/lib/validate.ts";
-
-export const paperBackends = ["claude-code", "openrouter"] as const;
-export type PaperBackend = (typeof paperBackends)[number];
 
 /** Bounds for a PaperBench run, shared by the JSON and the multipart endpoints: the
  * arguments become a command line either way, so both paths check the same limits. */
@@ -35,17 +32,16 @@ export function isPdf(bytes: Uint8Array): boolean {
   return magic.every((b, i) => bytes[i] === b);
 }
 
-/** A spend cap only means anything against openrouter's metered backend; claude-code runs
- * on the subscription, so these are left at 0 (no cap) there regardless of what a form
- * sends. Bounds match the free-topic run's own (`lib/validate.ts`). */
+/** Every run is metered (OpenRouter), so a spend cap always applies. Bounds match the
+ * free-topic run's own (`lib/validate.ts`). */
 export const MAX_USD = 5;
 export const MAX_TOKENS = 5_000_000;
 export const MAX_REQUESTS = 5000;
 
-/** Response length cap per call (openrouter backend only; see run.py's --max-tokens). A
- * persona reposts a whole file each round, and the judge answers with one verdict per
- * rubric leaf in a single structured reply — a rubric with many leaves needs far more
- * than the default to avoid "Exceeded maximum output retries" from a truncated reply. */
+/** Response length cap per call (see run.py's --max-tokens). A persona reposts a whole
+ * file each round, and the judge answers with one verdict per rubric leaf in a single
+ * structured reply — a rubric with many leaves needs far more than the default to avoid
+ * "Exceeded maximum output retries" from a truncated reply. */
 export const MIN_MAX_TOKENS = 256;
 export const MAX_MAX_TOKENS = 32_000;
 export const DEFAULT_MAX_TOKENS = 4000;
@@ -57,7 +53,6 @@ export interface PaperScalars {
   ranked: boolean;
   seats: number;
   compose: boolean;
-  backend: PaperBackend;
   model: string;
   usd: number;
   tokens: number;
@@ -102,13 +97,8 @@ export function parsePaperScalars(
   if (!Number.isFinite(seats) || seats < 0 || seats > MAX_SEATS) {
     throw new InvalidRequest(`Free seats must be between 0 and ${MAX_SEATS}`);
   }
-  const backend = String(input.backend ?? "claude-code") as PaperBackend;
-  if (!(paperBackends as readonly string[]).includes(backend)) {
-    throw new InvalidRequest("Unknown backend");
-  }
-  const modelChoices = backend === "openrouter" ? models : paperModels;
-  const model = String(input.model ?? modelChoices[0]);
-  if (!(modelChoices as readonly string[]).includes(model)) {
+  const model = String(input.model ?? models[0]);
+  if (!(models as readonly string[]).includes(model)) {
     throw new InvalidRequest("Unknown model");
   }
   const bounded = (value: unknown, name: string, max: number): number => {
@@ -133,12 +123,12 @@ export function parsePaperScalars(
     );
   }
   const maxTokens = Math.round(maxTokensRaw);
-  // openrouter is metered and has no wall-clock cap of its own (only per-call); with
-  // nothing here set, a run is bounded by nothing but --rounds. Same requirement, and the
-  // same reasoning, as the free-topic run's own (`lib/validate.ts`).
-  if (backend === "openrouter" && !usd && !tokens && !requests) {
+  // Metered, and with no wall-clock cap of its own (only per-call): with nothing here
+  // set, a run is bounded by nothing but --rounds. Same requirement, and the same
+  // reasoning, as the free-topic run's own (`lib/validate.ts`).
+  if (!usd && !tokens && !requests) {
     throw new InvalidRequest(
-      "Set a limit in dollars, tokens or requests: an uncapped OpenRouter run is not offered here",
+      "Set a limit in dollars, tokens or requests: an uncapped run is not offered here",
     );
   }
   return {
@@ -148,13 +138,10 @@ export function parsePaperScalars(
     ranked: truthy(input.ranked),
     seats,
     compose: truthy(input.compose),
-    backend,
     model,
-    // meaningless under claude-code: zeroed rather than trusted, so a stale value left
-    // over from switching the backend in the form never reaches the command line
-    usd: backend === "openrouter" ? usd : 0,
-    tokens: backend === "openrouter" ? tokens : 0,
-    requests: backend === "openrouter" ? requests : 0,
+    usd,
+    tokens,
+    requests,
     maxTokens,
   };
 }

@@ -6,12 +6,8 @@ import { define } from "@/utils.ts";
 
 /** The PaperBench twin of `/api/runs/[id]/graph.ts`: same store, same spec file, same
  * `buildGraph`, because `benchmarks/paperbench/run.py`'s swarm stage writes both in the
- * same shape `benchmarks/swarm/run.py` does. Under `--backend claude-code` there is no
- * usage sidecar (that backend runs on the subscription, not per-token, so `run.py` never
- * writes `paths.usage`) — `usage()` already reads a missing file as `[]`, the same as an
- * empty free-topic run before its first superstep, so `SwarmView`'s meter degrades to
- * nothing shown rather than an error. Under `--backend openrouter` `run.py`'s own `Tape`
- * plugin writes that file live, the same shape `benchmarks/swarm/run.py`'s does. */
+ * same shape `benchmarks/swarm/run.py` does — including the usage sidecar, written live
+ * by `run.py`'s own `Tape` plugin, the same shape `benchmarks/swarm/run.py`'s does. */
 export const handler = define.handlers({
   GET(ctx) {
     const run = read(ctx.params.id);

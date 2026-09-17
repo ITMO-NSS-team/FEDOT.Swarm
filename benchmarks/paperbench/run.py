@@ -9,28 +9,22 @@ paper's rubric branch instead of free text, its conduct is "write code", not "po
 one-line argument", and after the run each persona's last post is scored against the
 branch's requirements by a judge, which keeps the best.
 
-Every LLM call — personas, queen, compose, judge — goes through one of two backends,
-picked by `--backend`. The default, `ClaudeCodeLLM` below, is an adapter for fedotmas_llm's
-one-method `LLM` protocol (`packages/fedotmas-llm/src/fedotmas_llm/_llm.py`) backed by the
-harness's `claude-code` provider: it drives your own logged-in Claude Code CLI rather than
-a metered API key, so the whole swarm runs on your existing subscription. `claude-code`
-does not forward custom tools to the CLI session (see `_tools` in its Rust source), so a
-structured `Call.returns` (used by `compose()` and the preset's own queen) is asked for as
-JSON in the prompt and validated with a `TypeAdapter` rather than through tool-backed
-structured output. `--backend openrouter` swaps in `fedotmas_llm.adapters.pydantic_ai.
-PydanticAI` instead — the same metered backend `benchmarks/swarm/run.py` runs on — and
-with it, `--usd`/`--tokens`/`--requests` cap the run's spend the way they do there; those
-caps do nothing under `claude-code`, which has no per-token cost to cap.
+Every LLM call — personas, queen, compose, judge — goes through `fedotmas_llm.adapters.
+pydantic_ai.PydanticAI`, the same metered OpenRouter backend `benchmarks/swarm/run.py`
+runs on; `--usd`/`--tokens`/`--requests` cap the run's spend the way they do there.
 
 Usage:
-.venv/bin/python benchmarks/paperbench/run.py --paper stochastic-interpolants
-.venv/bin/python benchmarks/paperbench/run.py --paper stochastic-interpolants --personas 3 --rounds 4 --compose
+uv run python benchmarks/paperbench/run.py --paper classifier-free-guidance \
+  --paper-pdf benchmarks/paperbench/data/classifier-free-guidance/paper.pdf --usd 0.05
+uv run python benchmarks/paperbench/run.py --paper classifier-free-guidance \
+  --paper-pdf benchmarks/paperbench/data/classifier-free-guidance/paper.pdf \
+  --personas 3 --rounds 4 --compose --usd 0.05
 
 The swarm reads `data/<paper>/paper.md` when present (produced from the paper's LaTeX
 source by `parse_tex.py`, or its PDF by `parse_pdf.py`), falling back to the hand-written
 `paper_summary.md`.
-.venv/bin/python benchmarks/paperbench/parse_tex.py --paper stochastic-interpolants --source <file-or-dir>
-.venv/bin/python benchmarks/paperbench/parse_pdf.py --paper stochastic-interpolants --source <file.pdf>
+uv run python benchmarks/paperbench/parse_tex.py --paper <paper> --source <file-or-dir>
+uv run python benchmarks/paperbench/parse_pdf.py --paper <paper> --source <file.pdf>
 """
 
 from __future__ import annotations
@@ -55,19 +49,17 @@ from fedotmas_llm import Call, Price, SpendLimit, Usage
 from fedotmas_llm.adapters.pydantic_ai import PydanticAI
 from fedotmas_meta import AgentSpec, Catalog, SystemSpec, assemble, compose
 from fedotmas_meta.presets import SwarmPreset, by_interest
-from markov_sdk import Agent, Provider
-from pydantic import BaseModel, TypeAdapter
-from pydantic_ai.exceptions import ModelHTTPError
-
 from parse_pdf import convert as convert_pdf
 from parse_tex import convert as convert_tex
+from pydantic import BaseModel, TypeAdapter
+from pydantic_ai.exceptions import ModelHTTPError
 
 DATA = Path(__file__).parent / "data"
 FEED_WIDTH = 12
 
-# Every structured call here — compose(), the preset's own queen, and the openrouter judge
-# — asks pydantic-ai for a typed `output_type`, which it gets via a forced `tool_choice`.
-# Some OpenRouter models (qwen3.8-flash over Alibaba, seen in practice) reject that combo
+# Every structured call here — compose(), the preset's own queen, and the judge — asks
+# pydantic-ai for a typed `output_type`, which it gets via a forced `tool_choice`. Some
+# OpenRouter models (qwen3.8-flash over Alibaba, seen in practice) reject that combo
 # outright once their own "thinking mode" is on: "tool_choice ... does not support being
 # set to required or object in thinking mode" (HTTP 400). Reasoning off avoids it; unlike
 # free-topic's swarm, where only compose()/queen calls are structured and everything else
@@ -212,9 +204,9 @@ def _schema_hint(returns: Any) -> str:
 
 
 class _NoView:
-    """A `View` good for nothing but satisfying the type: the openrouter judge calls a
-    backend's `complete()` directly, outside the blackboard the swarm runs on, so there is
-    no store behind it to read."""
+    """A `View` good for nothing but satisfying the type: the judge calls the backend's
+    `complete()` directly, outside the blackboard the swarm runs on, so there is no store
+    behind it to read."""
 
     def get(self, tag: str) -> Any:
         return None
@@ -236,13 +228,12 @@ NO_VIEW = _NoView()
 
 
 class TimeoutLLM:
-    """Wraps a backend so no single call outruns `timeout`, the way `ClaudeCodeLLM` already
-    bounds its own CLI sessions via `Agent(..., timeout=...)`. `PydanticAI`'s OpenRouter
+    """Wraps a backend so no single call outruns `timeout`. `PydanticAI`'s OpenRouter
     calls have no timeout of their own otherwise, so a slow or stuck provider response
-    would hang the whole run rather than fail that one call the way a stuck claude-code
-    session already does — the failure is then just one more entry in `RunState.errors`,
-    the same as any other persona-call exception, since `SwarmPreset` already tolerates
-    (`halt_on_error=False`) one voice failing without ending the round for the others."""
+    would hang the whole run rather than fail that one call — the failure is then just
+    one more entry in `RunState.errors`, the same as any other persona-call exception,
+    since `SwarmPreset` already tolerates (`halt_on_error=False`) one voice failing
+    without ending the round for the others."""
 
     def __init__(self, inner: Any, timeout: float) -> None:
         self._inner = inner
@@ -260,9 +251,8 @@ class Tape(Plugin):
     """Appends what the swarm phase has spent so far after every superstep, the same
     JSONL-per-line shape `benchmarks/swarm/run.py`'s own `Tape` writes — so the web UI's
     existing spend meter (`SwarmView`, which already reads exactly this shape for the
-    free-topic swarm) works for a paperbench run too, live, without a change on that side
-    beyond pointing it at this file. Only meaningful under `--backend openrouter`; nothing
-    calls this for claude-code, which has no per-token cost to tape."""
+    free-topic swarm) works for a paperbench run too, live, without a change on that
+    side beyond pointing it at this file."""
 
     def __init__(self, path: Path, backend: Any, price: Price) -> None:
         self._path = path
@@ -285,45 +275,6 @@ class Tape(Plugin):
         )
         with self._path.open("a") as handle:
             handle.write(line + "\n")
-
-
-class ClaudeCodeLLM:
-    """Implements fedotmas_llm's `LLM` protocol — `async complete(call, view) -> Any` — over
-    the harness's `claude-code` provider. Every call is a fresh, tool-less coding-agent
-    session in its own scratch directory: personas, the preset's own queen, and compose()
-    all reach the same subscription-backed model through this one seam."""
-
-    def __init__(self, model: str, scratch: Path, timeout: float) -> None:
-        self._model = model
-        self._scratch = scratch
-        self._timeout = timeout
-        self._calls = 0
-
-    @property
-    def usage(self) -> Usage:
-        return Usage(requests=self._calls)
-
-    async def complete(self, call: Call, view: View) -> Any:
-        self._calls += 1
-        session_dir = self._scratch / f"call-{self._calls}"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        content = call.input if isinstance(call.input, str) else json.dumps(call.input)
-        prompt = f"{call.prompt}\n\n{content}"
-        if call.returns is not str:
-            prompt += (
-                "\n\nAnswer with only a JSON object, no other text, matching this shape: "
-                f"{_schema_hint(call.returns)}"
-            )
-        async with Agent(
-            model=self._model,
-            provider=Provider("claude-code"),
-            cwd=str(session_dir),
-            timeout=self._timeout,
-        ) as agent:
-            result = await agent.run(prompt)
-        if call.returns is str:
-            return result.output
-        return TypeAdapter(call.returns).validate_json(parse_json_block(result.output))
 
 
 def write_status(path: Path, step: str, percent: int) -> None:
@@ -434,7 +385,6 @@ class RunState:
     rounds_run: int = 0
     errors: list[dict[str, Any]] = field(default_factory=list)
     scored: dict[str, Any] = field(default_factory=dict)
-    backend: str = "claude-code"
     usd: float = 0.0
     tokens: int = 0
     requests: int = 0
@@ -448,22 +398,16 @@ class RunState:
 
 async def swarm_node(state: RunState) -> RunState:
     state.workdir.mkdir(parents=True, exist_ok=True)
-    scratch = state.workdir / "sessions"
-    scratch.mkdir(parents=True, exist_ok=True)
-    backend: Any = (
-        TimeoutLLM(
-            PydanticAI(
-                model=state.model,
-                model_settings={
-                    "max_tokens": state.max_tokens,
-                    "temperature": 0.9,
-                    **OPENROUTER_SETTINGS,
-                },
-            ),
-            state.timeout,
-        )
-        if state.backend == "openrouter"
-        else ClaudeCodeLLM(state.model, scratch, state.timeout)
+    backend = TimeoutLLM(
+        PydanticAI(
+            model=state.model,
+            model_settings={
+                "max_tokens": state.max_tokens,
+                "temperature": 0.9,
+                **OPENROUTER_SETTINGS,
+            },
+        ),
+        state.timeout,
     )
     rng = random.Random(state.seed)
     preset = SwarmPreset(
@@ -499,10 +443,8 @@ async def swarm_node(state: RunState) -> RunState:
     board = assemble(spec, Catalog(preset))
     db_path = state.workdir / "swarm.db"
     price = Price(state.price_in, state.price_out)
-    # a spend cap only makes sense against a metered backend: claude-code runs on the
-    # subscription, not per-token, so there is nothing here for it to check
     limit = None
-    if state.backend == "openrouter" and (state.usd or state.tokens or state.requests):
+    if state.usd or state.tokens or state.requests:
         limit = SpendLimit(
             backend,
             usd=state.usd or None,
@@ -515,20 +457,10 @@ async def swarm_node(state: RunState) -> RunState:
         # failures are worth another attempt (a 429 or a 5xx clears, a bad prompt or a
         # blown token budget just repeats), so Retry sits outside ConcurrencyLimit, and
         # SpendLimit sits under it so it checks the cap where the call actually leaves.
-        # claude-code raises its own exceptions, never `ModelHTTPError`, so Retry would be
-        # a pure no-op there — left out rather than added as dead weight.
         [
-            *(
-                [Retry(state.retries, on=ModelHTTPError)]
-                if state.backend == "openrouter"
-                else []
-            ),
+            Retry(state.retries, on=ModelHTTPError),
             ConcurrencyLimit(max(1, state.concurrency)),
-            *(
-                [Tape(Path(f"{db_path}.usage.jsonl"), backend, price)]
-                if state.backend == "openrouter"
-                else []
-            ),
+            Tape(Path(f"{db_path}.usage.jsonl"), backend, price),
             *([limit] if limit else []),
         ]
     )
@@ -572,17 +504,15 @@ async def swarm_node(state: RunState) -> RunState:
         for name, code in last_post.items()
     ]
 
-    usage = state.usage
-    if state.backend == "openrouter":
-        u: Usage = backend.usage
-        usage = {
-            **usage,
-            "swarm": {
-                "requests": u.requests,
-                "inputTokens": u.input_tokens,
-                "outputTokens": u.output_tokens,
-            },
-        }
+    u: Usage = backend.usage
+    usage = {
+        **state.usage,
+        "swarm": {
+            "requests": u.requests,
+            "inputTokens": u.input_tokens,
+            "outputTokens": u.output_tokens,
+        },
+    }
 
     return replace(
         state,
@@ -599,31 +529,11 @@ async def swarm_node(state: RunState) -> RunState:
 
 
 async def judge_variant(
-    state: RunState, variant: dict[str, Any], provider: Provider
-) -> dict[str, Any]:
-    # claude-code does not support switching mode after the session opens (mode="chat" is
-    # rejected), so the judge gets its own empty directory instead: nothing there for it to
-    # read or write even if it reaches for a tool the prompt never asks it to use.
-    judge_dir = state.workdir / "judge" / variant["id"]
-    judge_dir.mkdir(parents=True, exist_ok=True)
-    async with Agent(
-        model=state.model,
-        provider=provider,
-        cwd=str(judge_dir),
-        timeout=state.timeout,
-    ) as judge:
-        result = await judge.run(judge_prompt(state.leaves, variant["code"]))
-    verdicts = parse_judge_output(result.output)
-    return score(state.leaves, verdicts)
-
-
-async def judge_variant_openrouter(
     state: RunState, variant: dict[str, Any], backend: Any
 ) -> dict[str, Any]:
-    """The openrouter judge skips markov_sdk's `Agent`/`Provider` session entirely — that
-    seam is a claude-code coding-agent session with tools and a cwd, and a plain chat
-    completion has no use for either. `PydanticAI.complete` validates its reply against
-    `call.returns` itself, so unlike `judge_variant` there is no JSON to parse by hand."""
+    """`PydanticAI.complete` validates its reply against `call.returns` itself, so there
+    is no JSON to parse by hand here — unlike a persona's plain-string post, the judge's
+    reply is always a structured `Call.returns=JudgeReport`."""
     call = Call(
         prompt=judge_prompt(state.leaves, variant["code"]),
         input="",
@@ -641,30 +551,21 @@ async def judge_node(state: RunState) -> RunState:
     write_status(state.status_path, "judge", 60)
     started = time.monotonic()
     semaphore = asyncio.Semaphore(max(1, state.concurrency))
-    judge_backend: Any = None
+    judge_backend = TimeoutLLM(
+        PydanticAI(
+            model=state.model,
+            model_settings={
+                "max_tokens": state.max_tokens,
+                "temperature": 0.1,
+                **OPENROUTER_SETTINGS,
+            },
+        ),
+        state.timeout,
+    )
 
-    if state.backend == "openrouter":
-        judge_backend = TimeoutLLM(
-            PydanticAI(
-                model=state.model,
-                model_settings={
-                    "max_tokens": state.max_tokens,
-                    "temperature": 0.1,
-                    **OPENROUTER_SETTINGS,
-                },
-            ),
-            state.timeout,
-        )
-
-        async def bounded(variant: dict[str, Any]) -> dict[str, Any]:
-            async with semaphore:
-                return await judge_variant_openrouter(state, variant, judge_backend)
-    else:
-        provider = Provider("claude-code")
-
-        async def bounded(variant: dict[str, Any]) -> dict[str, Any]:
-            async with semaphore:
-                return await judge_variant(state, variant, provider)
+    async def bounded(variant: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            return await judge_variant(state, variant, judge_backend)
 
     scored = list(await asyncio.gather(*(bounded(v) for v in state.variants)))
     judge_seconds = time.monotonic() - started
@@ -678,17 +579,15 @@ async def judge_node(state: RunState) -> RunState:
         {"id": v["id"], "angle": v["angle"], "score": s["score"]}
         for v, s in zip(state.variants, scored)
     ]
-    usage = state.usage
-    if judge_backend is not None:
-        u: Usage = judge_backend.usage
-        usage = {
-            **usage,
-            "judge": {
-                "requests": u.requests,
-                "inputTokens": u.input_tokens,
-                "outputTokens": u.output_tokens,
-            },
-        }
+    u: Usage = judge_backend.usage
+    usage = {
+        **state.usage,
+        "judge": {
+            "requests": u.requests,
+            "inputTokens": u.input_tokens,
+            "outputTokens": u.output_tokens,
+        },
+    }
     return replace(
         state,
         judge_seconds=judge_seconds,
@@ -765,7 +664,6 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
         compose=args.compose,
         concurrency=args.concurrency,
         seed=args.seed,
-        backend=args.backend,
         usd=args.usd,
         tokens=args.tokens,
         requests=args.requests,
@@ -793,7 +691,6 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
         else None,
         "swarmSeconds": round(result.swarm_seconds, 1),
         "judgeSeconds": round(result.judge_seconds, 1),
-        "backend": args.backend,
         "usage": result.usage,
         "budget": result.budget,
         **result.scored,
@@ -802,7 +699,7 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
 
 def cli() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--paper", default="stochastic-interpolants")
+    p.add_argument("--paper", default="classifier-free-guidance")
     p.add_argument(
         "--paper-md",
         default=None,
@@ -832,18 +729,9 @@ def cli() -> argparse.Namespace:
         help="defaults to data/<paper>/blacklist.txt when only --paper is given",
     )
     p.add_argument(
-        "--backend",
-        choices=["claude-code", "openrouter"],
-        default="claude-code",
-        help="claude-code (default) drives your own claude CLI subscription; openrouter "
-        "is a metered API call and needs OPENROUTER_API_KEY in .env",
-    )
-    p.add_argument(
         "--model",
-        default="haiku",
-        help="for --backend claude-code, a claude CLI model alias (haiku, sonnet, opus, "
-        "fable), which track that family's latest version; for --backend openrouter, an "
-        "OpenRouter model id (e.g. openrouter:qwen/qwen3.7-flash)",
+        default="openrouter:qwen/qwen3.7-flash",
+        help="an OpenRouter model id, e.g. openrouter:qwen/qwen3.7-flash",
     )
     p.add_argument("--timeout", type=float, default=600.0)
     p.add_argument("--workdir", default=str(Path(__file__).parent / "out" / "workdir"))
@@ -870,25 +758,14 @@ def cli() -> argparse.Namespace:
         "--compose", action="store_true", help="let a meta-agent write the cast"
     )
     p.add_argument(
-        "--concurrency", type=int, default=2, help="claude CLI sessions at once"
+        "--concurrency", type=int, default=2, help="requests in flight at once"
     )
     p.add_argument(
-        "--usd",
-        type=float,
-        default=0.0,
-        help="stop the run once it costs this (openrouter backend only)",
+        "--usd", type=float, default=0.0, help="stop the run once it costs this"
     )
+    p.add_argument("--tokens", type=int, default=0, help="stop after this many tokens")
     p.add_argument(
-        "--tokens",
-        type=int,
-        default=0,
-        help="stop after this many tokens (openrouter backend only)",
-    )
-    p.add_argument(
-        "--requests",
-        type=int,
-        default=0,
-        help="stop after this many requests (openrouter backend only)",
+        "--requests", type=int, default=0, help="stop after this many requests"
     )
     p.add_argument(
         "--price-in",
@@ -907,15 +784,15 @@ def cli() -> argparse.Namespace:
         "--retries",
         type=int,
         default=3,
-        help="attempts per call on a transient HTTP error (openrouter backend only)",
+        help="attempts per call on a transient HTTP error",
     )
     p.add_argument(
         "--max-tokens",
         type=int,
         default=4000,
-        help="response length cap per call (openrouter backend only); a persona writes "
-        "a whole file each post, not a one-line argument the way free-topic's does, so "
-        "this defaults far above free-topic's own --max-tokens 800",
+        help="response length cap per call; a persona writes a whole file each post, "
+        "not a one-line argument the way free-topic's does, so this defaults far above "
+        "free-topic's own --max-tokens 800",
     )
     p.add_argument("--seed", type=int, default=7)
     return p.parse_args()
