@@ -22,12 +22,33 @@ export const MAX_TEX_FILES = 200;
 export const MAX_RUBRIC_BYTES = 1024 * 1024;
 export const MAX_LABEL_LENGTH = 120;
 
+/** A PDF stands in for the LaTeX source when it is not at hand; parse_pdf.py extracts
+ * text only (no OCR), so this is a fallback, not the preferred path (see run.py's own
+ * --paper-pdf help). 32 MB comfortably covers a typical paper's PDF, figures included. */
+export const MAX_PDF_BYTES = 32 * 1024 * 1024;
+
+/** `%PDF-` is the fixed 5-byte magic every PDF starts with — checked instead of trusting
+ * the client's filename or content-type, the same reasoning `sanitizeTexPath` applies to
+ * .tex uploads. */
+export function isPdf(bytes: Uint8Array): boolean {
+  const magic = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
+  return magic.every((b, i) => bytes[i] === b);
+}
+
 /** A spend cap only means anything against openrouter's metered backend; claude-code runs
  * on the subscription, so these are left at 0 (no cap) there regardless of what a form
  * sends. Bounds match the free-topic run's own (`lib/validate.ts`). */
 export const MAX_USD = 5;
 export const MAX_TOKENS = 5_000_000;
 export const MAX_REQUESTS = 5000;
+
+/** Response length cap per call (openrouter backend only; see run.py's --max-tokens). A
+ * persona reposts a whole file each round, and the judge answers with one verdict per
+ * rubric leaf in a single structured reply — a rubric with many leaves needs far more
+ * than the default to avoid "Exceeded maximum output retries" from a truncated reply. */
+export const MIN_MAX_TOKENS = 256;
+export const MAX_MAX_TOKENS = 32_000;
+export const DEFAULT_MAX_TOKENS = 4000;
 
 export interface PaperScalars {
   timeoutSeconds: number;
@@ -41,6 +62,7 @@ export interface PaperScalars {
   usd: number;
   tokens: number;
   requests: number;
+  maxTokens: number;
 }
 
 function truthy(value: unknown): boolean {
@@ -99,6 +121,16 @@ export function parsePaperScalars(
   const usd = bounded(input.usd, "usd", MAX_USD);
   const tokens = Math.round(bounded(input.tokens, "tokens", MAX_TOKENS));
   const requests = Math.round(bounded(input.requests, "requests", MAX_REQUESTS));
+  const maxTokensRaw = Number(input.maxTokens ?? DEFAULT_MAX_TOKENS);
+  if (
+    !Number.isFinite(maxTokensRaw) || maxTokensRaw < MIN_MAX_TOKENS ||
+    maxTokensRaw > MAX_MAX_TOKENS
+  ) {
+    throw new InvalidRequest(
+      `Max tokens must be between ${MIN_MAX_TOKENS} and ${MAX_MAX_TOKENS}`,
+    );
+  }
+  const maxTokens = Math.round(maxTokensRaw);
   // openrouter is metered and has no wall-clock cap of its own (only per-call); with
   // nothing here set, a run is bounded by nothing but --rounds. Same requirement, and the
   // same reasoning, as the free-topic run's own (`lib/validate.ts`).
@@ -121,6 +153,7 @@ export function parsePaperScalars(
     usd: backend === "openrouter" ? usd : 0,
     tokens: backend === "openrouter" ? tokens : 0,
     requests: backend === "openrouter" ? requests : 0,
+    maxTokens,
   };
 }
 

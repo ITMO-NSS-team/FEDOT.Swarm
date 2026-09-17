@@ -27,8 +27,10 @@ Usage:
 .venv/bin/python benchmarks/paperbench/run.py --paper stochastic-interpolants --personas 3 --rounds 4 --compose
 
 The swarm reads `data/<paper>/paper.md` when present (produced from the paper's LaTeX
-source by `parse_tex.py`), falling back to the hand-written `paper_summary.md`.
+source by `parse_tex.py`, or its PDF by `parse_pdf.py`), falling back to the hand-written
+`paper_summary.md`.
 .venv/bin/python benchmarks/paperbench/parse_tex.py --paper stochastic-interpolants --source <file-or-dir>
+.venv/bin/python benchmarks/paperbench/parse_pdf.py --paper stochastic-interpolants --source <file.pdf>
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from markov_sdk import Agent, Provider
 from pydantic import BaseModel, TypeAdapter
 from pydantic_ai.exceptions import ModelHTTPError
 
+from parse_pdf import convert as convert_pdf
 from parse_tex import convert as convert_tex
 
 DATA = Path(__file__).parent / "data"
@@ -138,6 +141,14 @@ def parse_tex_text(source: Path, workdir: Path) -> tuple[str, str]:
     workdir."""
     out_md = workdir / "paper.md"
     convert_tex(source, out_md)
+    return out_md.read_text(), source.name
+
+
+def parse_pdf_text(source: Path, workdir: Path) -> tuple[str, str]:
+    """Clean an uploaded PDF once, beside the run's own workdir — the fallback for a
+    paper whose LaTeX source is not at hand."""
+    out_md = workdir / "paper.md"
+    convert_pdf(source, out_md)
     return out_md.read_text(), source.name
 
 
@@ -699,8 +710,9 @@ pipeline = action(swarm_node, name="swarm") + action(judge_node, name="judge")
 
 async def main(args: argparse.Namespace) -> dict[str, Any]:
     paper_dir = DATA / args.paper
-    if args.paper_md and args.paper_tex:
-        raise ValueError("pass one of --paper-md or --paper-tex, not both")
+    sources = [s for s in (args.paper_md, args.paper_tex, args.paper_pdf) if s]
+    if len(sources) > 1:
+        raise ValueError("pass at most one of --paper-md, --paper-tex or --paper-pdf")
     workdir = Path(args.workdir)
     if args.paper_md:
         md = Path(args.paper_md)
@@ -708,6 +720,9 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
     elif args.paper_tex:
         write_status(Path(args.status), "parsing", 2)
         summary, paper_source = parse_tex_text(Path(args.paper_tex), workdir)
+    elif args.paper_pdf:
+        write_status(Path(args.status), "parsing", 2)
+        summary, paper_source = parse_pdf_text(Path(args.paper_pdf), workdir)
     else:
         summary, paper_source = load_paper_text(paper_dir)
     if args.rubric:
@@ -725,7 +740,7 @@ async def main(args: argparse.Namespace) -> dict[str, Any]:
         blacklist_path = paper_dir / "blacklist.txt"
         blacklist = (
             blacklist_path.read_text().split()
-            if not (args.paper_md or args.paper_tex or args.rubric)
+            if not (args.paper_md or args.paper_tex or args.paper_pdf or args.rubric)
             and blacklist_path.exists()
             else []
         )
@@ -798,6 +813,13 @@ def cli() -> argparse.Namespace:
         default=None,
         help="paper LaTeX source (a .tex file or a directory of them), cleaned at "
         "startup; needs nothing beyond the standard library",
+    )
+    p.add_argument(
+        "--paper-pdf",
+        default=None,
+        help="paper PDF, cleaned at startup with pymupdf (no OCR — a born-digital PDF "
+        "only); prefer --paper-tex when the LaTeX source is available, math and layout "
+        "survive a PDF's text extraction worse than they survive the LaTeX source itself",
     )
     p.add_argument(
         "--rubric",

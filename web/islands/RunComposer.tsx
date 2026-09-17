@@ -1,9 +1,16 @@
 import { useState } from "preact/hooks";
 import { models, paperModels, type RunRequest } from "@/lib/types.ts";
-import { type PaperBackend, paperBackends } from "@/lib/paper_upload.ts";
+import {
+  DEFAULT_MAX_TOKENS,
+  MAX_MAX_TOKENS,
+  MIN_MAX_TOKENS,
+  type PaperBackend,
+  paperBackends,
+} from "@/lib/paper_upload.ts";
 
 type Axis = "usd" | "tokens" | "requests";
 type Mode = "topic" | "paperbench";
+type PaperSource = "tex" | "pdf";
 
 const axes: {
   key: Axis;
@@ -42,12 +49,15 @@ export function RunComposer() {
   const [paperPersonas, setPaperPersonas] = useState(3);
   const [minutes, setMinutes] = useState(10);
   const [title, setTitle] = useState("");
+  const [paperSource, setPaperSource] = useState<PaperSource>("tex");
   const [texFiles, setTexFiles] = useState<File[]>([]);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [rubricFile, setRubricFile] = useState<File | null>(null);
   // Only spent under --backend openrouter: claude-code runs on the subscription and has
   // nothing here to cap.
   const [paperAxis, setPaperAxis] = useState<Axis>("usd");
   const [paperAmount, setPaperAmount] = useState(0.002);
+  const [maxTokens, setMaxTokens] = useState(DEFAULT_MAX_TOKENS);
 
   // Shared between both modes: the swarm's own machinery (rounds on a shared feed, an
   // optional ranked feed each, optional free seats a queen may fill, and whether a
@@ -100,10 +110,14 @@ export function RunComposer() {
   };
 
   const startPaperBench = async () => {
-    if (texFiles.length === 0 || !rubricFile) {
-      throw new Error(
-        "Attach both the paper's LaTeX source and the rubric JSON",
-      );
+    if (paperSource === "tex" && texFiles.length === 0) {
+      throw new Error("Attach the paper's LaTeX source (a folder of .tex files)");
+    }
+    if (paperSource === "pdf" && !pdfFile) {
+      throw new Error("Attach the paper's PDF");
+    }
+    if (!rubricFile) {
+      throw new Error("Attach the rubric branch JSON");
     }
     const budget = paperBackend === "openrouter"
       ? {
@@ -125,8 +139,13 @@ export function RunComposer() {
     form.set("usd", String(budget.usd));
     form.set("tokens", String(budget.tokens));
     form.set("requests", String(budget.requests));
-    for (const file of texFiles) {
-      form.append("tex", file, file.webkitRelativePath || file.name);
+    form.set("maxTokens", String(maxTokens));
+    if (paperSource === "tex") {
+      for (const file of texFiles) {
+        form.append("tex", file, file.webkitRelativePath || file.name);
+      }
+    } else {
+      form.set("pdf", pdfFile!);
     }
     form.set("rubric", rubricFile);
     const response = await fetch("/api/paperbench", {
@@ -210,36 +229,83 @@ export function RunComposer() {
                     setTitle((e.target as HTMLInputElement).value)}
                 />
               </label>
-              <label class="field">
-                <span>Paper LaTeX source</span>
-                <input
-                  type="file"
-                  // deno-lint-ignore no-explicit-any
-                  {...({ webkitdirectory: true, directory: true } as any)}
-                  multiple
-                  onChange={(e) => {
-                    const files = Array.from(
-                      (e.target as HTMLInputElement).files ?? [],
-                    ).filter((f) =>
-                      (f.webkitRelativePath || f.name).toLowerCase().endsWith(
-                        ".tex",
-                      )
-                    );
-                    setTexFiles(files);
-                  }}
-                />
+              <fieldset class="field limit">
+                <legend>Source</legend>
+                <div class="segmented" role="group" aria-label="Paper source format">
+                  <button
+                    type="button"
+                    aria-pressed={paperSource === "tex"}
+                    onClick={() => setPaperSource("tex")}
+                  >
+                    LaTeX folder
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={paperSource === "pdf"}
+                    onClick={() => setPaperSource("pdf")}
+                  >
+                    PDF
+                  </button>
+                </div>
                 <p class="hint">
-                  {texFiles.length > 0
-                    ? `${texFiles.length} .tex file${texFiles.length === 1 ? "" : "s"
-                    } — ${Math.round(
-                      texFiles.reduce((n, f) => n + f.size, 0) / 1024,
-                    )
-                    } KB`
-                    : "Pick the folder holding the paper's .tex source (any "
-                    + "entry-file name — the one with \\documentclass is found "
-                    + "automatically). Read directly, no OCR: only .tex files are sent."}
+                  {paperSource === "tex"
+                    ? "Preferred: exact math, no extraction noise."
+                    : "Fallback for when the LaTeX source is not at hand — text "
+                      + "extraction only (no OCR), so math and layout survive worse "
+                      + "than they do from the source."}
                 </p>
-              </label>
+              </fieldset>
+              {paperSource === "tex"
+                ? (
+                  <label class="field">
+                    <span>Paper LaTeX source</span>
+                    <input
+                      type="file"
+                      // deno-lint-ignore no-explicit-any
+                      {...({ webkitdirectory: true, directory: true } as any)}
+                      multiple
+                      onChange={(e) => {
+                        const files = Array.from(
+                          (e.target as HTMLInputElement).files ?? [],
+                        ).filter((f) =>
+                          (f.webkitRelativePath || f.name).toLowerCase().endsWith(
+                            ".tex",
+                          )
+                        );
+                        setTexFiles(files);
+                      }}
+                    />
+                    <p class="hint">
+                      {texFiles.length > 0
+                        ? `${texFiles.length} .tex file${texFiles.length === 1 ? "" : "s"
+                        } — ${Math.round(
+                          texFiles.reduce((n, f) => n + f.size, 0) / 1024,
+                        )
+                        } KB`
+                        : "Pick the folder holding the paper's .tex source (any "
+                        + "entry-file name — the one with \\documentclass is found "
+                        + "automatically). Read directly, no OCR: only .tex files are sent."}
+                    </p>
+                  </label>
+                )
+                : (
+                  <label class="field">
+                    <span>Paper PDF</span>
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      onChange={(e) =>
+                        setPdfFile(
+                          (e.target as HTMLInputElement).files?.[0] ?? null,
+                        )}
+                    />
+                    <p class="hint">
+                      {pdfFile
+                        ? `${pdfFile.name} — ${Math.round(pdfFile.size / 1024)} KB`
+                        : "The paper's PDF, e.g. straight from arXiv."}
+                    </p>
+                  </label>
+                )}
               <label class="field">
                 <span>Rubric branch JSON</span>
                 <input
@@ -441,6 +507,27 @@ export function RunComposer() {
                   ends with the feed intact.
                 </p>
               </fieldset>
+            )}
+            {paperBackend === "openrouter" && (
+              <label class="field">
+                <span>Max tokens</span>
+                <input
+                  type="number"
+                  min={MIN_MAX_TOKENS}
+                  max={MAX_MAX_TOKENS}
+                  value={maxTokens}
+                  onInput={(e) =>
+                    setMaxTokens(
+                      Number((e.target as HTMLInputElement).value),
+                    )}
+                />
+                <p class="hint">
+                  Response length cap per call. A persona reposts a whole
+                  file each round, and the judge answers with one verdict
+                  per rubric leaf in a single reply — raise this for a large
+                  rubric branch, or the judge can run out of room and fail.
+                </p>
+              </label>
             )}
           </>
         )}

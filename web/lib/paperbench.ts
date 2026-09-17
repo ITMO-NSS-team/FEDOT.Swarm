@@ -80,6 +80,7 @@ export interface PaperRun {
   usd: number;
   tokens: number;
   requests: number;
+  maxTokens: number;
   state: PaperRunState;
   startedAt: number;
   endedAt: number | null;
@@ -218,6 +219,7 @@ function settle(run: PaperRun): PaperRun {
 export interface PaperInputs {
   id?: string;
   paperTex?: string;
+  paperPdf?: string;
   rubric?: string;
 }
 
@@ -246,6 +248,7 @@ export function create(
     usd: scalars.usd,
     tokens: scalars.tokens,
     requests: scalars.requests,
+    maxTokens: scalars.maxTokens,
     state: "starting",
     startedAt: Date.now(),
     endedAt: null,
@@ -284,6 +287,7 @@ export function create(
       "--model",
       model,
       ...(inputs.paperTex ? ["--paper-tex", inputs.paperTex] : []),
+      ...(inputs.paperPdf ? ["--paper-pdf", inputs.paperPdf] : []),
       ...(inputs.rubric ? ["--rubric", inputs.rubric] : []),
       ...(ranked ? ["--ranked"] : []),
       ...(seats > 0 ? ["--seats", String(seats)] : []),
@@ -291,6 +295,8 @@ export function create(
       ...(scalars.usd > 0 ? ["--usd", String(scalars.usd)] : []),
       ...(scalars.tokens > 0 ? ["--tokens", String(scalars.tokens)] : []),
       ...(scalars.requests > 0 ? ["--requests", String(scalars.requests)] : []),
+      "--max-tokens",
+      String(scalars.maxTokens),
     ],
     cwd: projectRoot(),
     stdin: "null",

@@ -1,6 +1,8 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@^1";
 import { InvalidRequest } from "@/lib/validate.ts";
 import {
+  DEFAULT_MAX_TOKENS,
+  isPdf,
   parsePaperScalars,
   sanitizeTexPath,
   uploadLabel,
@@ -132,6 +134,19 @@ Deno.test("a spend cap is zeroed under claude-code, kept under openrouter", () =
   assertEquals(openrouter.tokens, 1000);
 });
 
+Deno.test("max tokens defaults, and is bounded, regardless of backend", () => {
+  assertEquals(parsePaperScalars(scalars).maxTokens, DEFAULT_MAX_TOKENS);
+  assertEquals(parsePaperScalars({ ...scalars, maxTokens: 12000 }).maxTokens, 12000);
+  assertThrows(
+    () => parsePaperScalars({ ...scalars, maxTokens: 10 }),
+    InvalidRequest,
+  );
+  assertThrows(
+    () => parsePaperScalars({ ...scalars, maxTokens: 999_999 }),
+    InvalidRequest,
+  );
+});
+
 Deno.test("a well-formed branch validates to its leaves", () => {
   const leaves = validateRubricBranch(branch);
   assertEquals(leaves.length, 2);
@@ -171,6 +186,14 @@ Deno.test("a path is refused without the .tex extension or with traversal", () =
   assertEquals(sanitizeTexPath("../../etc/passwd.tex"), null);
   assertEquals(sanitizeTexPath("a/../b.tex"), null);
   assertEquals(sanitizeTexPath(".tex"), null);
+});
+
+Deno.test("a PDF is told apart from other files by its magic bytes, not its name", () => {
+  const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x35]); // "%PDF-1.5"
+  assertEquals(isPdf(pdf), true);
+  assertEquals(isPdf(new Uint8Array([0x25, 0x50, 0x44])), false); // too short
+  assertEquals(isPdf(new TextEncoder().encode("not a pdf at all")), false);
+  assertEquals(isPdf(new Uint8Array()), false);
 });
 
 Deno.test("the label prefers the title, then the upload's folder or file name", () => {
