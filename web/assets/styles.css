@@ -255,6 +255,32 @@ select {
   border-color: #9097a3;
 }
 
+/* A file picker is a button, not a text box: the native control keeps working, but the
+   visible button matches the app's black pills instead of the browser default. */
+.field input[type="file"] {
+  min-height: 0;
+  padding: 8px 12px;
+  font-size: .875rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.field input[type="file"]::file-selector-button {
+  margin-right: 12px;
+  padding: 6px 16px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--action);
+  color: #fff;
+  font-size: .8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.field input[type="file"]::file-selector-button:hover {
+  background: var(--action-hover);
+}
+
 .field-row {
   display: grid;
   grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
@@ -282,6 +308,18 @@ select {
 }
 
 .compose .limit {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px;
+  margin: 0;
+}
+
+/* Same card as the limit group above: a bare fieldset draws the browser's own groove
+   border, which sits outside this app's visual language. */
+.compose .upload {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 16px;
@@ -416,6 +454,30 @@ select {
   font-size: .8125rem;
 }
 
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--action);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--hover);
+}
+
+.icon-btn.danger {
+  color: var(--danger);
+  border-color: #e0b9bb;
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -464,6 +526,220 @@ select {
 
 .error-page .primary-button {
   margin-top: 16px;
+}
+
+/* Meter, shared by the swarm and paper results */
+
+.meter {
+  padding: 12px 20px;
+  text-align: right;
+}
+
+.meter-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: .75rem;
+}
+
+.meter-amount {
+  margin: 4px 0 0;
+  font-size: 1.5rem;
+  font-weight: 650;
+}
+
+/* Paper result */
+
+.paper-result {
+  display: grid;
+  gap: 20px;
+  padding: 24px;
+}
+
+.paper-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.paper-caveat {
+  margin: 0;
+  color: var(--muted);
+  font-size: .8125rem;
+}
+
+.paper-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width .3s ease;
+}
+
+.paper-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+
+/* Nested in the swarm screen's side column (see swarm.css): narrow, so it reads as one
+   more panel in that scrolling list rather than the full-width two-column layout. */
+.swarm-side .paper-result {
+  padding: 16px;
+  gap: 16px;
+}
+
+.swarm-side .paper-columns {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+
+.paper-columns h2 {
+  margin: 0 0 12px;
+  font-size: .9375rem;
+}
+
+.file-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: .8125rem;
+}
+
+.file-info {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+.file-lines {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.copy-path {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 99px;
+  background: #fff;
+  color: var(--action);
+  font-size: .75rem;
+  cursor: pointer;
+}
+
+.copy-path:hover {
+  background: var(--hover);
+}
+
+.checklist {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist li {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.check-row {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.check-row:hover {
+  background: var(--soft);
+}
+
+.checklist .check-mark {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: .8125rem;
+  font-weight: 700;
+}
+
+.checklist li.pass .check-mark {
+  background: #e4f1ea;
+  color: var(--success);
+}
+
+.checklist li.fail .check-mark {
+  background: #f7e6e7;
+  color: var(--danger);
+}
+
+.checklist .check-req {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .8125rem;
+  font-weight: 550;
+}
+
+.checklist .check-reason {
+  margin: 0;
+  padding: 0 12px 12px 44px;
+  color: var(--muted);
+  font-size: .8125rem;
+}
+
+@media (max-width: 900px) {
+  .paper-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

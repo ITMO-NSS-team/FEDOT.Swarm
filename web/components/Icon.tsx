@@ -5,6 +5,7 @@ const paths = {
   swarm:
     "M12 4v5M12 15v5M6.5 7.5l3 3M14.5 13.5l3 3M4 12h5M15 12h5M6.5 16.5l3-3M14.5 10.5l3-3",
   runs: "M4 6h16M4 12h16M4 18h9",
+  paper: "M6 3h9l5 5v13H6z M15 3v5h5 M9 13h6 M9 17h6",
 } as const;
 
 export function Icon(

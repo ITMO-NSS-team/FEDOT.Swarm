@@ -216,5 +216,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 benchmarks/out/
+benchmarks/paperbench/out/
 
 .DS_Store
+
+/article

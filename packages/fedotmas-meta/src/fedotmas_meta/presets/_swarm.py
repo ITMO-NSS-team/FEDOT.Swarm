@@ -106,6 +106,7 @@ class SwarmPreset:
         casting: bool = False,
         seats: int = 4,
         rng: random.Random | None = None,
+        conduct: str = CONDUCT,
     ) -> None:
         self.feed_width = feed_width
         self.min_active = min_active
@@ -115,6 +116,7 @@ class SwarmPreset:
         self.casting = casting
         self.seats = seats if casting else 0
         self._rng = rng or random.Random()
+        self.conduct = conduct
 
     @property
     def reserved(self) -> frozenset[str]:
@@ -214,7 +216,7 @@ class SwarmPreset:
         This is the whole trick of a live roster, and it needs nothing from the engine."""
         return PromptRule(
             name=name,
-            prompt=CONDUCT,
+            prompt=self.conduct,
             input=SEAT.replace("NAME", name),
             reads="tick",
             writes="post",
@@ -267,7 +269,7 @@ class SwarmPreset:
             alive = lambda v, n=agent.name: n not in _cast_of(v)["retired"]
         return PromptRule(
             name=agent.name,
-            prompt=f"{agent.prompt}\n{CONDUCT}",
+            prompt=f"{agent.prompt}\n{self.conduct}",
             input=template,
             reads="tick",
             writes="post",

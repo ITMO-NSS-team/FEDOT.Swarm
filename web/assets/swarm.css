@@ -253,10 +253,17 @@
 /* Side column */
 
 .swarm-side {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.swarm-side .panel,
+.swarm-side .paper-result {
+  flex-shrink: 0;
 }
 
 .swarm-side .panel {
@@ -264,7 +271,7 @@
   min-height: 0;
 }
 
-.swarm-side .panel > header {
+.swarm-side .panel>header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -334,6 +341,7 @@
 .feed {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  max-height: 360px;
 }
 
 .feed ol {
@@ -404,4 +412,10 @@
     max-height: none;
     margin: 16px;
   }
+}
+
+.truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

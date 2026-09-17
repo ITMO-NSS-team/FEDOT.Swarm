@@ -1,7 +1,9 @@
 import { useState } from "preact/hooks";
-import { models, type RunRequest } from "@/lib/types.ts";
+import { models, paperModels, type RunRequest } from "@/lib/types.ts";
+import { type PaperBackend, paperBackends } from "@/lib/paper_upload.ts";
 
 type Axis = "usd" | "tokens" | "requests";
+type Mode = "topic" | "paperbench";
 
 const axes: {
   key: Axis;
@@ -10,23 +12,51 @@ const axes: {
   step: number;
   preset: number;
 }[] = [
-  { key: "usd", label: "Dollars", unit: "USD", step: 0.0001, preset: 0.002 },
-  { key: "tokens", label: "Tokens", unit: "tokens", step: 100, preset: 20000 },
-  { key: "requests", label: "Requests", unit: "requests", step: 1, preset: 40 },
-];
+    { key: "usd", label: "Dollars", unit: "USD", step: 0.0001, preset: 0.002 },
+    { key: "tokens", label: "Tokens", unit: "tokens", step: 100, preset: 20000 },
+    { key: "requests", label: "Requests", unit: "requests", step: 1, preset: 40 },
+  ];
+
+const MIN_MINUTES = 2;
+const MAX_MINUTES = 20;
+const MIN_PAPER_PERSONAS = 1;
+const MAX_PAPER_PERSONAS = 12;
+const MIN_PAPER_ROUNDS = 1;
+const MAX_PAPER_ROUNDS = 100;
 
 export function RunComposer() {
+  const [mode, setMode] = useState<Mode>("topic");
+
+  // Free-topic swarm state
   const [topic, setTopic] = useState(
     "Should frontier AI labs release model weights openly?",
   );
   const [model, setModel] = useState<string>(models[0]);
   const [personas, setPersonas] = useState(12);
-  const [rounds, setRounds] = useState(8);
-  const [compose, setCompose] = useState(true);
-  const [ranked, setRanked] = useState(true);
-  const [seats, setSeats] = useState(0);
   const [axis, setAxis] = useState<Axis>("usd");
   const [amount, setAmount] = useState(0.002);
+
+  // PaperBench state
+  const [paperBackend, setPaperBackend] = useState<PaperBackend>("claude-code");
+  const [paperModel, setPaperModel] = useState<string>(paperModels[0]);
+  const [paperPersonas, setPaperPersonas] = useState(3);
+  const [minutes, setMinutes] = useState(10);
+  const [title, setTitle] = useState("");
+  const [texFiles, setTexFiles] = useState<File[]>([]);
+  const [rubricFile, setRubricFile] = useState<File | null>(null);
+  // Only spent under --backend openrouter: claude-code runs on the subscription and has
+  // nothing here to cap.
+  const [paperAxis, setPaperAxis] = useState<Axis>("usd");
+  const [paperAmount, setPaperAmount] = useState(0.002);
+
+  // Shared between both modes: the swarm's own machinery (rounds on a shared feed, an
+  // optional ranked feed each, optional free seats a queen may fill, and whether a
+  // meta-agent writes the cast) does not change between a free topic and a fixed rubric.
+  const [rounds, setRounds] = useState(8);
+  const [ranked, setRanked] = useState(true);
+  const [seats, setSeats] = useState(0);
+  const [compose, setCompose] = useState(true);
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,10 +65,17 @@ export function RunComposer() {
     setAmount(axes.find((a) => a.key === next)!.preset);
   };
 
-  const start = async (event: Event) => {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
+  const pickPaper = (next: Axis) => {
+    setPaperAxis(next);
+    setPaperAmount(axes.find((a) => a.key === next)!.preset);
+  };
+
+  const pickPaperBackend = (next: PaperBackend) => {
+    setPaperBackend(next);
+    setPaperModel(next === "openrouter" ? models[0] : paperModels[0]);
+  };
+
+  const startTopic = async () => {
     const request: RunRequest = {
       topic,
       model,
@@ -52,17 +89,63 @@ export function RunComposer() {
       tokens: axis === "tokens" ? amount : 0,
       requests: axis === "requests" ? amount : 0,
     };
-    try {
-      const response = await fetch("/api/runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(request),
-      });
-      const body = await response.json();
-      if (!response.ok) {
-        throw new Error(body.error ?? "Could not start the run");
+    const response = await fetch("/api/runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? "Could not start the run");
+    location.href = `/swarm/${body.run.id}`;
+  };
+
+  const startPaperBench = async () => {
+    if (texFiles.length === 0 || !rubricFile) {
+      throw new Error(
+        "Attach both the paper's LaTeX source and the rubric JSON",
+      );
+    }
+    const budget = paperBackend === "openrouter"
+      ? {
+        usd: paperAxis === "usd" ? paperAmount : 0,
+        tokens: paperAxis === "tokens" ? paperAmount : 0,
+        requests: paperAxis === "requests" ? paperAmount : 0,
       }
-      location.href = `/swarm/${body.run.id}`;
+      : { usd: 0, tokens: 0, requests: 0 };
+    const form = new FormData();
+    form.set("title", title);
+    form.set("timeoutSeconds", String(minutes * 60));
+    form.set("personas", String(paperPersonas));
+    form.set("rounds", String(rounds));
+    form.set("ranked", String(ranked));
+    form.set("seats", String(seats));
+    form.set("compose", String(compose));
+    form.set("backend", paperBackend);
+    form.set("model", paperModel);
+    form.set("usd", String(budget.usd));
+    form.set("tokens", String(budget.tokens));
+    form.set("requests", String(budget.requests));
+    for (const file of texFiles) {
+      form.append("tex", file, file.webkitRelativePath || file.name);
+    }
+    form.set("rubric", rubricFile);
+    const response = await fetch("/api/paperbench", {
+      method: "POST",
+      body: form,
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error ?? "Could not start the run");
+    }
+    location.href = `/paperbench/${body.run.id}`;
+  };
+
+  const start = async (event: Event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await (mode === "topic" ? startTopic() : startPaperBench());
     } catch (failure) {
       setError(
         failure instanceof Error ? failure.message : "Could not start the run",
@@ -75,45 +158,180 @@ export function RunComposer() {
 
   return (
     <form class="panel compose" onSubmit={start}>
-      <label class="field">
-        <span>Topic</span>
-        <input
-          value={topic}
-          maxLength={300}
-          required
-          onInput={(e) => setTopic((e.target as HTMLInputElement).value)}
-        />
-      </label>
+      <fieldset class="field limit">
+        <legend>Target</legend>
+        <div class="segmented" role="group" aria-label="Swarm target">
+          <button
+            type="button"
+            aria-pressed={mode === "topic"}
+            onClick={() => setMode("topic")}
+          >
+            Free topic
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === "paperbench"}
+            onClick={() => setMode("paperbench")}
+          >
+            PaperBench
+          </button>
+        </div>
+        <p class="hint">
+          {mode === "topic"
+            ? "The cast argues a topic you write, on a shared feed, for as many rounds as you allow."
+            : "The cast writes code for the paper and rubric branch you upload, on a shared feed, over as many rounds as you allow; a judge scores every voice's last post and keeps the best."}
+        </p>
+      </fieldset>
+
+      {mode === "topic"
+        ? (
+          <label class="field">
+            <span>Topic</span>
+            <input
+              value={topic}
+              maxLength={300}
+              required
+              onInput={(e) => setTopic((e.target as HTMLInputElement).value)}
+            />
+          </label>
+        )
+        : (
+          <div class="field">
+            <span>Paper</span>
+            <fieldset class="field upload">
+              <legend>Upload</legend>
+              <label class="field">
+                <span>Title (optional)</span>
+                <input
+                  value={title}
+                  maxLength={120}
+                  placeholder="Shown on the run page"
+                  onInput={(e) =>
+                    setTitle((e.target as HTMLInputElement).value)}
+                />
+              </label>
+              <label class="field">
+                <span>Paper LaTeX source</span>
+                <input
+                  type="file"
+                  // deno-lint-ignore no-explicit-any
+                  {...({ webkitdirectory: true, directory: true } as any)}
+                  multiple
+                  onChange={(e) => {
+                    const files = Array.from(
+                      (e.target as HTMLInputElement).files ?? [],
+                    ).filter((f) =>
+                      (f.webkitRelativePath || f.name).toLowerCase().endsWith(
+                        ".tex",
+                      )
+                    );
+                    setTexFiles(files);
+                  }}
+                />
+                <p class="hint">
+                  {texFiles.length > 0
+                    ? `${texFiles.length} .tex file${texFiles.length === 1 ? "" : "s"
+                    } — ${Math.round(
+                      texFiles.reduce((n, f) => n + f.size, 0) / 1024,
+                    )
+                    } KB`
+                    : "Pick the folder holding the paper's .tex source (any "
+                    + "entry-file name — the one with \\documentclass is found "
+                    + "automatically). Read directly, no OCR: only .tex files are sent."}
+                </p>
+              </label>
+              <label class="field">
+                <span>Rubric branch JSON</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(e) =>
+                    setRubricFile(
+                      (e.target as HTMLInputElement).files?.[0] ?? null,
+                    )}
+                />
+                <p class="hint">
+                  {rubricFile
+                    ? `${rubricFile.name} — ${Math.round(rubricFile.size / 1024)
+                    } KB`
+                    : "One branch object: requirements, weight, sub_tasks with leaves."}
+                </p>
+              </label>
+            </fieldset>
+          </div>
+        )}
+
+      {mode === "paperbench" && (
+        <fieldset class="field limit">
+          <legend>Backend</legend>
+          <div class="segmented" role="group" aria-label="PaperBench backend">
+            {paperBackends.map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={paperBackend === option}
+                onClick={() => pickPaperBackend(option)}
+              >
+                {option === "claude-code" ? "Claude CLI" : "OpenRouter"}
+              </button>
+            ))}
+          </div>
+          <p class="hint">
+            {paperBackend === "claude-code"
+              ? "Every persona is a claude CLI session on your own subscription — no metered key, no spend cap."
+              : "Every persona is a metered OpenRouter call, the same way the free-topic swarm runs — set a spend cap below."}
+          </p>
+        </fieldset>
+      )}
 
       <div class="field-row">
         <label class="field">
           <span>Model</span>
           <select
-            value={model}
-            onInput={(e) => setModel((e.target as HTMLSelectElement).value)}
+            value={mode === "topic" ? model : paperModel}
+            onInput={(e) => {
+              const value = (e.target as HTMLSelectElement).value;
+              if (mode === "topic") setModel(value);
+              else setPaperModel(value);
+            }}
           >
-            {models.map((name) => (
-              <option key={name} value={name}>{name.split("/").at(-1)}</option>
-            ))}
+            {(mode === "topic"
+              ? models
+              : paperBackend === "openrouter"
+              ? models
+              : paperModels).map((name) => (
+                <option key={name} value={name}>{name.split("/").at(-1)}</option>
+              ))}
           </select>
         </label>
+
         <label class="field">
           <span>Agents</span>
           <input
             type="number"
-            min={2}
-            max={300}
-            value={personas}
-            onInput={(e) =>
-              setPersonas(Number((e.target as HTMLInputElement).value))}
+            min={mode === "topic" ? 2 : MIN_PAPER_PERSONAS}
+            max={mode === "topic" ? 300 : MAX_PAPER_PERSONAS}
+            value={mode === "topic" ? personas : paperPersonas}
+            onInput={(e) => {
+              const value = Number((e.target as HTMLInputElement).value);
+              if (mode === "topic") setPersonas(value);
+              else setPaperPersonas(value);
+            }}
           />
+          {mode === "paperbench" && (
+            <p class="hint">
+              Voices in the room; each one's last post is scored against the
+              rubric and the judge keeps the best.
+            </p>
+          )}
         </label>
+
         <label class="field">
           <span>Rounds</span>
           <input
             type="number"
-            min={1}
-            max={30}
+            min={mode === "topic" ? 1 : MIN_PAPER_ROUNDS}
+            max={mode === "topic" ? 30 : MAX_PAPER_ROUNDS}
             value={rounds}
             onInput={(e) =>
               setRounds(Number((e.target as HTMLInputElement).value))}
@@ -124,7 +342,7 @@ export function RunComposer() {
           <input
             type="number"
             min={0}
-            max={8}
+            max={mode === "topic" ? 8 : 4}
             value={seats}
             onInput={(e) =>
               setSeats(Number((e.target as HTMLInputElement).value))}
@@ -132,37 +350,100 @@ export function RunComposer() {
         </label>
       </div>
 
-      <fieldset class="field limit">
-        <legend>Stop after</legend>
-        <div class="segmented" role="group" aria-label="Limit axis">
-          {axes.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              aria-pressed={axis === option.key}
-              onClick={() => pick(option.key)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <div class="limit-amount">
-          <input
-            type="number"
-            min={0}
-            step={current.step}
-            value={amount}
-            aria-label={`Limit in ${current.unit}`}
-            onInput={(e) =>
-              setAmount(Number((e.target as HTMLInputElement).value))}
-          />
-          <span>{current.unit}</span>
-        </div>
-        <p class="hint">
-          Nothing is called past the limit, so the room goes quiet and the run
-          ends with its feed intact. Requests already in flight still land.
-        </p>
-      </fieldset>
+      {mode === "topic"
+        ? (
+          <fieldset class="field limit">
+            <legend>Stop after</legend>
+            <div class="segmented" role="group" aria-label="Limit axis">
+              {axes.map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  aria-pressed={axis === option.key}
+                  onClick={() => pick(option.key)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div class="limit-amount">
+              <input
+                type="number"
+                min={0}
+                step={current.step}
+                value={amount}
+                aria-label={`Limit in ${current.unit}`}
+                onInput={(e) =>
+                  setAmount(Number((e.target as HTMLInputElement).value))}
+              />
+              <span>{current.unit}</span>
+            </div>
+            <p class="hint">
+              Nothing is called past the limit, so the room goes quiet and the
+              run ends with its feed intact. Requests already in flight still
+              land.
+            </p>
+          </fieldset>
+        )
+        : (
+          <>
+            <label class="field">
+              <span>Time limit</span>
+              <input
+                type="number"
+                min={MIN_MINUTES}
+                max={MAX_MINUTES}
+                value={minutes}
+                onInput={(e) =>
+                  setMinutes(Number((e.target as HTMLInputElement).value))}
+              />
+              <p class="hint">
+                Minutes each attempt may spend before its turn is cut off.
+                {paperBackend === "claude-code"
+                  ? " There is no dollar cap here: it has no built-in spend limit, only this per-attempt one."
+                  : " A required spend cap is below — an OpenRouter run is never started without one."}
+              </p>
+            </label>
+            {paperBackend === "openrouter" && (
+              <fieldset class="field limit">
+                <legend>Stop after</legend>
+                <div class="segmented" role="group" aria-label="Limit axis">
+                  {axes.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      aria-pressed={paperAxis === option.key}
+                      onClick={() => pickPaper(option.key)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <div class="limit-amount">
+                  <input
+                    type="number"
+                    min={0}
+                    step={axes.find((a) => a.key === paperAxis)!.step}
+                    value={paperAmount}
+                    aria-label={`Limit in ${
+                      axes.find((a) => a.key === paperAxis)!.unit
+                    }`}
+                    onInput={(e) =>
+                      setPaperAmount(
+                        Number((e.target as HTMLInputElement).value),
+                      )}
+                  />
+                  <span>{axes.find((a) => a.key === paperAxis)!.unit}</span>
+                </div>
+                <p class="hint">
+                  Required for OpenRouter — a run with all three at zero is
+                  refused. Nothing is called past the limit, so the round
+                  ends with the feed intact.
+                </p>
+              </fieldset>
+            )}
+          </>
+        )}
 
       <div class="toggles">
         <label class="toggle">
@@ -173,8 +454,9 @@ export function RunComposer() {
           />
           <span>
             <strong>Write the cast</strong>
-            A meta-agent proposes the agents for this topic. Off uses the
-            handwritten cast.
+            {mode === "topic"
+              ? " A meta-agent proposes the agents for this topic. Off uses the handwritten cast."
+              : " A meta-agent proposes the coders for this rubric. Off uses a plain numbered cast."}
           </span>
         </label>
         <label class="toggle">
@@ -186,8 +468,7 @@ export function RunComposer() {
           <span>
             <strong>A feed each</strong>
             Every agent reads its own ranking of the posts instead of one shared
-            wall. Off still draws the graph, but as affinity the run did not act
-            on.
+            wall.
           </span>
         </label>
       </div>

@@ -1,7 +1,8 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Simulation } from "@/lib/force.ts";
 import { feedWidth } from "@/lib/influence.ts";
-import type { Graph, GraphNode, Post, Run, RunState } from "@/lib/types.ts";
+import type { Graph, GraphNode, Post, RunState } from "@/lib/types.ts";
 
 interface UsageTick {
   index: number;
@@ -29,7 +30,31 @@ function money(value: number) {
   return value < 0.01 ? `$${value.toFixed(6)}` : `$${value.toFixed(4)}`;
 }
 
-export function SwarmView({ run }: { run: Run }) {
+export interface SwarmViewProps {
+  /** Base for polling and stopping the run, e.g. `/api/runs/<id>` or
+   * `/api/paperbench/<id>`: this component appends `/graph` itself and, if `canStop`,
+   * issues its DELETE straight at this base — same contract both registries already
+   * expose. */
+  base: string;
+  /** Shown as the room's subject until the graph's own `topic` fact loads. */
+  fallbackTopic: string;
+  rounds: number;
+  /** The state the caller already knows, shown until the first poll lands. */
+  initialState: RunState;
+  /** Precomputed, since what a run is capped by differs by registry (a spend axis for
+   * the free-topic swarm, a wall-clock timeout for PaperBench). */
+  cap: string;
+  canStop?: boolean;
+  /** Extra panels appended to the scrolling side column, e.g. PaperBench's score/files/
+   * checklist — so a caller with more to show than the spend meter and the feed still
+   * fits one screen instead of running a second, page-scrolling section below the graph. */
+  children?: ComponentChildren;
+}
+
+export function SwarmView(
+  { base, fallbackTopic, rounds, initialState, cap, canStop = false, children }:
+    SwarmViewProps,
+) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -42,14 +67,14 @@ export function SwarmView({ run }: { run: Run }) {
   const dragging = useRef<string | null>(null);
 
   const step = scrub;
-  const state = snapshot?.state ?? run.state;
+  const state = snapshot?.state ?? initialState;
 
   useEffect(() => {
     let stop = false;
     const pull = async () => {
       const query = step === null ? "" : `?step=${step}`;
       try {
-        const response = await fetch(`/api/runs/${run.id}/graph${query}`);
+        const response = await fetch(`${base}/graph${query}`);
         if (!response.ok) {
           throw new Error((await response.json()).error ?? "unavailable");
         }
@@ -75,9 +100,12 @@ export function SwarmView({ run }: { run: Run }) {
       stop = true;
       clearInterval(timer);
     };
-  }, [run.id, step, state, following]);
+  }, [base, step, state, following]);
 
   const graph = snapshot?.graph;
+  // -1 means the store has no committed superstep yet (a run just starting, or one from
+  // before this graph existed at all)
+  const roundsDone = Math.max(0, graph?.steps ?? 0);
 
   useEffect(() => {
     if (!graph) return;
@@ -218,9 +246,8 @@ export function SwarmView({ run }: { run: Run }) {
                 <g
                   key={node.name}
                   transform={`translate(${point.x} ${point.y})`}
-                  class={`node node-${node.kind}${
-                    selected === node.name ? " node-selected" : ""
-                  }${node.posts === 0 ? " node-silent" : ""}`}
+                  class={`node node-${node.kind}${selected === node.name ? " node-selected" : ""
+                    }${node.posts === 0 ? " node-silent" : ""}`}
                   tabIndex={0}
                   role="button"
                   aria-label={`${node.name}, ${node.posts} posts`}
@@ -252,7 +279,7 @@ export function SwarmView({ run }: { run: Run }) {
 
         <div class="swarm-title">
           <h1>Influence graph</h1>
-          <p>{graph?.topic ?? run.topic}</p>
+          <p className="truncate">{graph?.topic ?? fallbackTopic}</p>
           {graph && graph.nodes.length > 0 && (
             <p class="swarm-count">
               {spoke} of {graph.nodes.length} have spoken, {written}{" "}
@@ -375,30 +402,31 @@ export function SwarmView({ run }: { run: Run }) {
                   </div>
                   <div>
                     <dt>Rounds</dt>
-                    <dd>{snapshot?.usage.length ?? 0} of {run.rounds}</dd>
+                    <dd>{roundsDone} of {rounds}</dd>
                   </div>
                 </dl>
               </>
             )
-            : <p class="meter-waiting">No superstep has committed yet.</p>}
-          <p class="meter-cap">
-            Cap: {run.usd
-              ? money(run.usd)
-              : run.tokens
-              ? `${run.tokens.toLocaleString("en")} tokens`
-              : `${run.requests} requests`}
-          </p>
+            : (
+              <dl class="meter-grid">
+                <div>
+                  <dt>Rounds</dt>
+                  <dd>{roundsDone} of {rounds}</dd>
+                </div>
+              </dl>
+            )}
+          <p class="meter-cap">Cap: {cap}</p>
           {snapshot?.report != null && (
             <p class="meter-reason">
               Ended on <strong>{String(snapshot.report.reason ?? "?")}</strong>.
             </p>
           )}
-          {live(state) && (
+          {canStop && live(state) && (
             <button
               type="button"
               class="secondary-button"
               onClick={async () => {
-                const response = await fetch(`/api/runs/${run.id}`, {
+                const response = await fetch(base, {
                   method: "DELETE",
                 });
                 const body = await response.json();
@@ -429,15 +457,15 @@ export function SwarmView({ run }: { run: Run }) {
           <input
             type="range"
             min={0}
-            max={Math.max(0, graph?.steps ?? 0)}
-            value={snapshot?.step ?? 0}
+            max={roundsDone}
+            value={Math.max(0, snapshot?.step ?? 0)}
             disabled={following}
             onInput={(e) =>
               setScrub(Number((e.target as HTMLInputElement).value))}
           />
           <p class="hint">
-            Round {snapshot?.step ?? 0} of{" "}
-            {graph?.steps ?? 0}. The graph is rebuilt from the posts committed
+            Round {Math.max(0, snapshot?.step ?? 0)} of{" "}
+            {roundsDone}. The graph is rebuilt from the posts committed
             by that round.
           </p>
         </section>
@@ -469,6 +497,8 @@ export function SwarmView({ run }: { run: Run }) {
         {(failure || snapshot?.error) && (
           <p class="form-error" role="status">{failure ?? snapshot?.error}</p>
         )}
+
+        {children}
       </aside>
     </div>
   );
