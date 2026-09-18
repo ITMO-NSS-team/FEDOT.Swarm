@@ -22,11 +22,13 @@ uv add --group dev <pkg>     # dev tooling
 ```bash
 uv run ruff check <paths>             # lint
 uv run ruff format <paths>            # format (add --check to verify only)
-uv run ty check packages/                                     # types
-uv run pytest packages/fedotmas packages/fedotmas-llm packages/fedotmas-meta -q
+uv run ty check packages/ benchmarks/paperbench                # types
+uv run pytest -q                      # engine, adapters, meta, benchmarks/paperbench/tests
+cd web && deno task verify            # the front end
 ```
 
-Trust ruff, ty, and pytest, not the editor's Pyright.
+`just verify` runs all of it; `just e2e` drives the front end in headless Chromium against a
+fake runner. Trust ruff, ty, and pytest, not the editor's Pyright.
 
 ## Code style
 
@@ -54,8 +56,14 @@ Maximum minimalism; the code speaks for itself.
 - Core `fedotmas` is provider-free (no LLM). Backends, agents, and `PromptRule` live in
   `fedotmas-llm`; system synthesis lives in `fedotmas-meta`.
 - `web/` is a separate Deno workspace, not a uv package: it spawns `benchmarks/swarm/run.py`
-  and reads the run's `SqliteStore`. It has its own `deno task verify`; the Python verify block
-  above does not cover it.
+  and `benchmarks/paperbench/run.py` and reads the run's `SqliteStore`, status and report
+  files. Nothing else talks between Deno and Python.
+- PaperBench voices are OpenCode sessions (`fedotmas_llm.adapters.opencode`, one
+  `opencode serve` per run, a git workspace per voice) plugged into `SwarmPreset` through
+  `persona_factory`; the engine and the preset's clock, feed and casting do not know. A meter
+  that carries a `cost` is charged by it, the rest by catalog price (`SpendLimit`).
+- The container (`Dockerfile`, `compose.yaml`) is the deployment: marker, its weights, a
+  llama.cpp server, OpenCode and the built front end, all pinned; state under `/data`.
 
 ## Tests
 

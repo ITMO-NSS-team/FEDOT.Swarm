@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { Fact, Post } from "@/lib/types.ts";
+import type { Fact, Post, PostMeta, UsageTick } from "@/lib/types.ts";
 
 /** Reads a fedotmas `SqliteStore` while the run that owns it is still writing. The store is
  * WAL with a single writer, so a second connection sees committed supersteps as they land;
@@ -50,12 +50,50 @@ export function facts(path: string, tag?: string): Fact[] {
   }) ?? [];
 }
 
+type Structured = Record<string, unknown> & { report: string };
+
+const structured = (value: unknown): value is Structured =>
+  typeof value === "object" && value !== null &&
+  typeof (value as { report?: unknown }).report === "string";
+
+/** What a post reads as: the same rule as `fedotmas_meta.presets.post_text`. */
+export function postText(value: unknown): string {
+  if (structured(value)) return value.report;
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+const sum = (record: unknown): number =>
+  typeof record === "object" && record !== null
+    ? Object.values(record as Record<string, unknown>).reduce<number>(
+      (n, v) => n + (typeof v === "number" ? v : 0),
+      0,
+    )
+    : 0;
+
+export function postMeta(value: unknown): PostMeta | undefined {
+  if (!structured(value)) return undefined;
+  return {
+    files: Array.isArray(value.files) ? value.files.map(String) : [],
+    cost: typeof value.cost === "number" ? value.cost : 0,
+    tokens: sum(value.tokens),
+    toolCalls: sum(value.toolCalls),
+    seconds: typeof value.seconds === "number" ? value.seconds : 0,
+    timedOut: value.timedOut === true,
+    error: typeof value.error === "string" ? value.error : null,
+  };
+}
+
 export function posts(path: string): Post[] {
-  return facts(path, "post").map((f) => ({
-    producer: f.producer,
-    step: f.step,
-    text: String(f.value),
-  }));
+  return facts(path, "post").map((f) => {
+    const meta = postMeta(f.value);
+    return {
+      producer: f.producer,
+      step: f.step,
+      text: postText(f.value),
+      ...(meta ? { meta } : {}),
+    };
+  });
 }
 
 export function topic(path: string): string {
@@ -87,21 +125,13 @@ export function cast(specPath: string): Record<string, string> {
     };
     const personas = spec.fill?.personas ?? {};
     return Object.fromEntries(
-      Object.entries(personas).map(([name, agent]) => [name, agent.prompt ?? ""]),
+      Object.entries(personas).map((
+        [name, agent],
+      ) => [name, agent.prompt ?? ""]),
     );
   } catch {
     return {};
   }
-}
-
-export interface UsageTick {
-  index: number;
-  fired: number;
-  requests: number;
-  input_tokens: number;
-  output_tokens: number;
-  usd: number;
-  at: number;
 }
 
 /** The sidecar `run.py` appends to after every superstep. One line per step, so the last

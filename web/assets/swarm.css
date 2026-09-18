@@ -271,7 +271,7 @@
   min-height: 0;
 }
 
-.swarm-side .panel>header {
+.swarm-side .panel > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -418,4 +418,55 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Live activity of OpenCode voices */
+
+.node-halo {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-opacity: .6;
+  animation: halo 1.6s ease-in-out infinite;
+}
+
+@keyframes halo {
+  50% {
+    stroke-opacity: .15;
+  }
+}
+
+.legend-busy::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.swarm-live,
+.swarm-activity {
+  margin: 6px 0 0;
+  font-size: .75rem;
+  color: var(--accent);
+}
+
+.swarm-meta {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.swarm-meta dt {
+  font-size: .6875rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+}
+
+.swarm-meta dd {
+  margin: 0;
+  font-size: .8125rem;
+}
+
+.swarm-open {
+  margin-top: 12px;
+  width: 100%;
+  min-height: 36px;
 }

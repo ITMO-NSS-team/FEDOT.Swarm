@@ -1,6 +1,6 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@^1";
 import { InvalidRequest, parseRequest } from "@/lib/validate.ts";
-import { models } from "@/lib/types.ts";
+import { defaultModels as models } from "@/lib/models.ts";
 
 const valid = {
   topic: "Should model weights be open?",

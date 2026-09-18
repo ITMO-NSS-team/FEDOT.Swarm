@@ -1,6 +1,12 @@
 {
   "nodeModulesDir": "auto",
-  "fmt": { "proseWrap": "preserve" },
+  "fmt": {
+    "proseWrap": "preserve",
+    "exclude": [
+      "e2e/",
+      "tests/fixtures/"
+    ]
+  },
   "tasks": {
     "dev": "vite",
     "build": "vite build",
@@ -21,7 +27,8 @@
     "preact": "npm:preact@^10.27.1",
     "preact/hooks": "npm:preact@^10.27.1/hooks",
     "preact/jsx-runtime": "npm:preact@^10.27.1/jsx-runtime",
-    "vite": "npm:vite@^7.1.5"
+    "vite": "npm:vite@^7.1.5",
+    "fflate": "npm:fflate@^0.8.2"
   },
   "compilerOptions": {
     "jsx": "precompile",
@@ -42,7 +49,25 @@
       "noscript",
       "template"
     ],
-    "types": ["vite/client"]
+    "types": [
+      "vite/client"
+    ]
   },
-  "lint": { "rules": { "tags": ["fresh", "recommended"] } }
+  "lint": {
+    "rules": {
+      "tags": [
+        "fresh",
+        "recommended"
+      ]
+    },
+    "exclude": [
+      "e2e/",
+      "tests/fixtures/"
+    ]
+  },
+  "exclude": [
+    "e2e/node_modules/",
+    "e2e/shots/",
+    "e2e/test-results/"
+  ]
 }

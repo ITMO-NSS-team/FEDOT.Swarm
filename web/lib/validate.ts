@@ -1,8 +1,14 @@
-import { models, type RunRequest } from "@/lib/types.ts";
+import { isKnownModel, models } from "@/lib/models.ts";
+import type { RunRequest } from "@/lib/types.ts";
 
 export class InvalidRequest extends Error {}
 
-function bounded(value: unknown, name: string, min: number, max: number): number {
+function bounded(
+  value: unknown,
+  name: string,
+  min: number,
+  max: number,
+): number {
   const n = typeof value === "number" ? value : Number(value ?? NaN);
   if (!Number.isFinite(n) || n < min || n > max) {
     throw new InvalidRequest(`${name} must be between ${min} and ${max}`);
@@ -14,19 +20,22 @@ function bounded(value: unknown, name: string, min: number, max: number): number
  * and quoted later. Caps are the demonstration's, not the engine's: a visitor should not be
  * able to start a thousand-agent run from a form. */
 export function parseRequest(body: unknown): RunRequest {
-  if (!body || typeof body !== "object") throw new InvalidRequest("Expected an object");
+  if (!body || typeof body !== "object") {
+    throw new InvalidRequest("Expected an object");
+  }
   const raw = body as Record<string, unknown>;
 
   const topic = String(raw.topic ?? "").trim();
   if (topic.length < 3 || topic.length > 300) {
     throw new InvalidRequest("Topic must be between 3 and 300 characters");
   }
+  // deno-lint-ignore no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(topic)) {
     throw new InvalidRequest("Topic must not contain control characters");
   }
 
-  const model = String(raw.model ?? models[0]);
-  if (!(models as readonly string[]).includes(model)) {
+  const model = String(raw.model ?? models()[0]);
+  if (!isKnownModel(model)) {
     throw new InvalidRequest("Unknown model");
   }
 

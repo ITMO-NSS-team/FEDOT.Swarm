@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 import re
 from collections.abc import Callable, Iterable
@@ -61,6 +62,42 @@ class Cast(TypedDict):
 
 
 Ranker = Callable[[Agent, list[Fact]], list[Fact]]
+PersonaFactory = Callable[
+    [Agent, str, str, Callable[[View], bool], dict[str, Any]], Rule
+]
+
+
+def post_text(value: Any) -> str:
+    """What a post reads as on the feed: a plain post is its own text, a structured one (a
+    worker's round, say) is its `report`, anything else is shown as json."""
+    match value:
+        case {"report": str(report)}:
+            return report
+        case str():
+            return value
+        case _:
+            return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def prompt_persona(
+    agent: Agent,
+    prompt: str,
+    template: str,
+    when: Callable[[View], bool],
+    meta: dict[str, Any],
+) -> Rule:
+    """The default persona: one prompt over the LLM seam per round."""
+    return PromptRule(
+        name=agent.name,
+        prompt=prompt,
+        input=template,
+        reads="tick",
+        writes="post",
+        when=when,
+        llm=agent.llm,
+        tools=list(agent.tools) or None,
+        meta=meta,
+    )
 
 
 def by_interest(agent: Agent, posts: list[Fact]) -> list[Fact]:
@@ -68,7 +105,9 @@ def by_interest(agent: Agent, posts: list[Fact]) -> list[Fact]:
     by how much of their vocabulary the persona already uses, recent first among equals. Word
     overlap rather than embeddings, so it stays free and offline."""
     words = _words(agent.prompt)
-    scored = [(len(words & _words(str(f.value))), i, f) for i, f in enumerate(posts)]
+    scored = [
+        (len(words & _words(post_text(f.value))), i, f) for i, f in enumerate(posts)
+    ]
     return [f for _, _, f in sorted(scored, key=lambda s: s[:2], reverse=True)]
 
 
@@ -84,7 +123,9 @@ class SwarmPreset:
 
     With `ranker` set, each persona gets its own feed rule and reads its own ranking of the
     same posts, which is what lets a room split rather than converge. Seed a run with
-    `seed(topic)` and let it end on its round budget: nothing writes a goal.
+    `seed(topic)` and let it end on its round budget: nothing writes a goal. A
+    `persona_factory` swaps what a voice is made of (a coding agent in its own workspace,
+    say) without touching the clock, the feed or the casting.
     """
 
     name = "swarm"
@@ -107,6 +148,7 @@ class SwarmPreset:
         seats: int = 4,
         rng: random.Random | None = None,
         conduct: str = CONDUCT,
+        persona_factory: PersonaFactory | None = None,
     ) -> None:
         self.feed_width = feed_width
         self.min_active = min_active
@@ -117,6 +159,7 @@ class SwarmPreset:
         self.seats = seats if casting else 0
         self._rng = rng or random.Random()
         self.conduct = conduct
+        self.persona_factory = persona_factory or prompt_persona
 
     @property
     def reserved(self) -> frozenset[str]:
@@ -210,18 +253,16 @@ class SwarmPreset:
             when=lambda v: v.exists("amendment"),
         )
 
-    def _seat(self, name: str) -> PromptRule:
+    def _seat(self, name: str) -> Rule:
         """A free seat: a persona whose character is a fact instead of a string fixed at
         compile, so it exists only while the cast seats someone in it and is whoever that is.
         This is the whole trick of a live roster, and it needs nothing from the engine."""
-        return PromptRule(
-            name=name,
-            prompt=self.conduct,
-            input=SEAT.replace("NAME", name),
-            reads="tick",
-            writes="post",
-            when=lambda v, n=name: n in _cast_of(v)["hired"],
-            meta={"activity_level": self._rng.uniform(*self.activity)},
+        return self.persona_factory(
+            Agent(name=name, prompt=self.conduct),
+            self.conduct,
+            SEAT.replace("NAME", name),
+            lambda v, n=name: n in _cast_of(v)["hired"],
+            {"activity_level": self._rng.uniform(*self.activity)},
         )
 
     def _clock(self) -> Rule:
@@ -247,7 +288,8 @@ class SwarmPreset:
                 keep = {f.key for f in ranker(agent, posts)[:width]}
                 posts = [f for f in posts if f.key in keep]
             return (
-                "\n".join(f"{f.producer}: {f.value}" for f in posts[-width:]) or EMPTY
+                "\n".join(f"{f.producer}: {post_text(f.value)}" for f in posts[-width:])
+                or EMPTY
             )
 
         return Rule(name=tag, fn=digest, reads="tick", writes=tag, when=lambda v: True)
@@ -258,7 +300,7 @@ class SwarmPreset:
             raise SpecError(f"personas {sorted(taken)} shadow their own feed rules")
         return [self._feed(a) for a in agents]
 
-    def _persona(self, agent: Agent) -> PromptRule:
+    def _persona(self, agent: Agent) -> Rule:
         """The spec supplies the character, the preset the conduct: what this medium rewards
         is the preset's business, not the meta-agent's."""
         template = FEED
@@ -267,16 +309,12 @@ class SwarmPreset:
         alive: Callable[[View], bool] = lambda v: True
         if self.casting:
             alive = lambda v, n=agent.name: n not in _cast_of(v)["retired"]
-        return PromptRule(
-            name=agent.name,
-            prompt=f"{agent.prompt}\n{self.conduct}",
-            input=template,
-            reads="tick",
-            writes="post",
-            when=alive,
-            llm=agent.llm,
-            tools=list(agent.tools) or None,
-            meta={"activity_level": self._rng.uniform(*self.activity)},
+        return self.persona_factory(
+            agent,
+            f"{agent.prompt}\n{self.conduct}",
+            template,
+            alive,
+            {"activity_level": self._rng.uniform(*self.activity)},
         )
 
 

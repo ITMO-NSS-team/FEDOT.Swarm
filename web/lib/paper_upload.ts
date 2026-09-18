@@ -1,10 +1,25 @@
-import { models } from "@/lib/types.ts";
+import { isKnownModel, models } from "@/lib/models.ts";
 import { InvalidRequest } from "@/lib/validate.ts";
 
 /** Bounds for a PaperBench run, shared by the JSON and the multipart endpoints: the
  * arguments become a command line either way, so both paths check the same limits. */
-export const MIN_SECONDS = 2 * 60;
-export const MAX_SECONDS = 20 * 60;
+export const MIN_SECONDS = 60;
+export const MAX_SECONDS = 30 * 60;
+export const DEFAULT_SECONDS = 600;
+export const MIN_ROUND_MINUTES = 1;
+export const MAX_ROUND_MINUTES = 15;
+export const DEFAULT_ROUND_MINUTES = 4;
+export const MIN_STEPS = 4;
+export const MAX_STEPS = 60;
+export const DEFAULT_STEPS = 20;
+export const MIN_CONCURRENCY = 1;
+export const MAX_CONCURRENCY = 8;
+export const DEFAULT_CONCURRENCY = 4;
+export const MAX_SEED = 2_147_483_647;
+export const PDF_ENGINES = ["marker", "pymupdf"] as const;
+export const WORKERS = ["opencode", "prompt"] as const;
+export type PdfEngine = (typeof PDF_ENGINES)[number];
+export type Workers = (typeof WORKERS)[number];
 export const MIN_PERSONAS = 1;
 export const MAX_PERSONAS = 12;
 export const MIN_ROUNDS = 1;
@@ -19,9 +34,8 @@ export const MAX_TEX_FILES = 200;
 export const MAX_RUBRIC_BYTES = 1024 * 1024;
 export const MAX_LABEL_LENGTH = 120;
 
-/** A PDF stands in for the LaTeX source when it is not at hand; parse_pdf.py extracts
- * text only (no OCR), so this is a fallback, not the preferred path (see run.py's own
- * --paper-pdf help). 32 MB comfortably covers a typical paper's PDF, figures included. */
+/** A PDF is converted by marker (layout, tables, OCR) or by pymupdf's text layer; 32 MB
+ * comfortably covers a typical paper's PDF, figures included. */
 export const MAX_PDF_BYTES = 32 * 1024 * 1024;
 
 /** `%PDF-` is the fixed 5-byte magic every PDF starts with — checked instead of trusting
@@ -47,6 +61,7 @@ export const MAX_MAX_TOKENS = 32_000;
 export const DEFAULT_MAX_TOKENS = 4000;
 
 export interface PaperScalars {
+  /** Per-call timeout of the composer, the queen and the judge. */
   timeoutSeconds: number;
   personas: number;
   rounds: number;
@@ -58,6 +73,14 @@ export interface PaperScalars {
   tokens: number;
   requests: number;
   maxTokens: number;
+  seed: number;
+  pdfEngine: PdfEngine;
+  /** Wall clock an OpenCode voice gets per round. */
+  roundMinutes: number;
+  /** Tool-loop steps an OpenCode voice may take per round. */
+  steps: number;
+  concurrency: number;
+  workers: Workers;
 }
 
 function truthy(value: unknown): boolean {
@@ -68,15 +91,58 @@ function truthy(value: unknown): boolean {
 export function parsePaperScalars(
   input: Record<string, unknown>,
 ): PaperScalars {
-  const timeout = Number(input.timeoutSeconds);
+  const timeout = Number(input.timeoutSeconds ?? DEFAULT_SECONDS);
   if (
     !Number.isFinite(timeout) || timeout < MIN_SECONDS || timeout > MAX_SECONDS
   ) {
     throw new InvalidRequest(
-      `Time limit must be between ${MIN_SECONDS / 60} and ${
-        MAX_SECONDS / 60
-      } minutes`,
+      `Call timeout must be between ${MIN_SECONDS} and ${MAX_SECONDS} seconds`,
     );
+  }
+  const integer = (
+    value: unknown,
+    name: string,
+    min: number,
+    max: number,
+    fallback: number,
+  ): number => {
+    const n = Math.round(Number(value ?? fallback));
+    if (!Number.isFinite(n) || n < min || n > max) {
+      throw new InvalidRequest(`${name} must be between ${min} and ${max}`);
+    }
+    return n;
+  };
+  const roundMinutes = Number(input.roundMinutes ?? DEFAULT_ROUND_MINUTES);
+  if (
+    !Number.isFinite(roundMinutes) || roundMinutes < MIN_ROUND_MINUTES ||
+    roundMinutes > MAX_ROUND_MINUTES
+  ) {
+    throw new InvalidRequest(
+      `Minutes per round must be between ${MIN_ROUND_MINUTES} and ${MAX_ROUND_MINUTES}`,
+    );
+  }
+  const steps = integer(
+    input.steps,
+    "Steps per round",
+    MIN_STEPS,
+    MAX_STEPS,
+    DEFAULT_STEPS,
+  );
+  const concurrency = integer(
+    input.concurrency,
+    "Concurrency",
+    MIN_CONCURRENCY,
+    MAX_CONCURRENCY,
+    DEFAULT_CONCURRENCY,
+  );
+  const seed = integer(input.seed, "Seed", 0, MAX_SEED, 7);
+  const pdfEngine = String(input.pdfEngine ?? "marker");
+  if (!(PDF_ENGINES as readonly string[]).includes(pdfEngine)) {
+    throw new InvalidRequest("Unknown PDF engine");
+  }
+  const workers = String(input.workers ?? "opencode");
+  if (!(WORKERS as readonly string[]).includes(workers)) {
+    throw new InvalidRequest("Unknown worker kind");
   }
   const personas = Math.round(Number(input.personas ?? 1));
   if (
@@ -97,8 +163,8 @@ export function parsePaperScalars(
   if (!Number.isFinite(seats) || seats < 0 || seats > MAX_SEATS) {
     throw new InvalidRequest(`Free seats must be between 0 and ${MAX_SEATS}`);
   }
-  const model = String(input.model ?? models[0]);
-  if (!(models as readonly string[]).includes(model)) {
+  const model = String(input.model ?? models()[0]);
+  if (!isKnownModel(model)) {
     throw new InvalidRequest("Unknown model");
   }
   const bounded = (value: unknown, name: string, max: number): number => {
@@ -143,6 +209,12 @@ export function parsePaperScalars(
     tokens,
     requests,
     maxTokens,
+    seed,
+    pdfEngine: pdfEngine as PdfEngine,
+    roundMinutes,
+    steps,
+    concurrency,
+    workers: workers as Workers,
   };
 }
 
@@ -309,6 +381,7 @@ export function sanitizeTexPath(path: string): string | null {
  * the upload (the source folder's name, or a lone file's). */
 export function uploadLabel(title: unknown, fallback: string | null): string {
   const clean = (text: string) =>
+    // deno-lint-ignore no-control-regex
     text.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
       .slice(0, MAX_LABEL_LENGTH);
   const named = typeof title === "string" ? clean(title) : "";

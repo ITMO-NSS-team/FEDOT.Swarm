@@ -4,20 +4,20 @@ import { define } from "@/utils.ts";
 export const handler = define.handlers({
   GET(ctx) {
     const run = read(ctx.params.id);
-    if (!run) return Response.json({ error: "not found" }, { status: 404 });
-    return Response.json(run);
+    if (!run) return Response.json({ error: "No such run" }, { status: 404 });
+    return Response.json({ run }, { headers: { "cache-control": "no-store" } });
   },
-  /** Ends the run. A persona mid-call still finishes its turn, so the response says
-   * what was stopped rather than claiming nothing more will happen. */
+  /** Ends the run: `run.py` aborts the OpenCode sessions in flight and exits, so the
+   * response says what was signalled rather than claiming nothing more will happen. */
   DELETE(ctx) {
     const run = read(ctx.params.id);
-    if (!run) return Response.json({ error: "not found" }, { status: 404 });
+    if (!run) return Response.json({ error: "No such run" }, { status: 404 });
     const stopped = stop(ctx.params.id);
     return Response.json({
       stopped,
       detail: stopped
-        ? "No further rounds will start; sessions already in flight still complete."
-        : "This run is not owned by this server process.",
+        ? "Stopping: sessions in flight are being aborted and no further round will start."
+        : "This run is not running, or its process is not reachable from this server.",
     }, { status: stopped ? 200 : 409 });
   },
 });

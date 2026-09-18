@@ -1,6 +1,12 @@
 import { dirname, join } from "node:path";
-import { create, list, type PaperInputs } from "@/lib/paperbench.ts";
+import {
+  create,
+  list,
+  type PaperInputs,
+  type PaperInputsRecord,
+} from "@/lib/paperbench.ts";
 import { newRunId, paperPaths } from "@/lib/paths.ts";
+import { removeQuietly } from "@/lib/registry.ts";
 import {
   buildRubricBranch,
   isPdf,
@@ -34,8 +40,15 @@ function start(
       run: create(paper, scalars, inputs),
     }, { status: 201 });
   } catch (error) {
+    if (inputs.id) removeQuietly(paperPaths(inputs.id).inputs, true);
     return failed(error, 502);
   }
+}
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /** The folder's own name if the upload was nested (a browser's `webkitdirectory` picker
@@ -135,12 +148,17 @@ async function postUpload(req: Request) {
   const paths = paperPaths(id);
   let paperInputs: Pick<PaperInputs, "paperTex" | "paperPdf">;
   let label: string;
+  const record: PaperInputsRecord = {
+    kind: hasPdf ? "pdf" : "tex",
+    paperName: "",
+    paperSha256: null,
+    rubricSha256: null,
+  };
   try {
     Deno.mkdirSync(paths.inputs, { recursive: true, mode: 0o700 });
-    Deno.writeTextFileSync(
-      join(paths.inputs, "rubric_branch.json"),
-      JSON.stringify(rubric),
-    );
+    const rubricBytes = new TextEncoder().encode(JSON.stringify(rubric));
+    Deno.writeFileSync(join(paths.inputs, "rubric_branch.json"), rubricBytes);
+    record.rubricSha256 = await sha256(rubricBytes);
     if (hasPdf) {
       const pdf = pdfFile as File;
       if (pdf.size > MAX_PDF_BYTES) {
@@ -150,6 +168,7 @@ async function postUpload(req: Request) {
       }
       const bytes = new Uint8Array(await pdf.arrayBuffer());
       if (!isPdf(bytes)) {
+        removeQuietly(paths.inputs, true);
         return Response.json({ error: "That file is not a PDF" }, {
           status: 422,
         });
@@ -158,8 +177,11 @@ async function postUpload(req: Request) {
       Deno.writeFileSync(dest, bytes);
       paperInputs = { paperPdf: dest };
       label = uploadLabel(fields["title"], pdf.name);
+      record.paperName = pdf.name;
+      record.paperSha256 = await sha256(bytes);
     } else {
       if (texFiles.length > MAX_TEX_FILES) {
+        removeQuietly(paths.inputs, true);
         return Response.json({
           error: `At most ${MAX_TEX_FILES} .tex files are accepted`,
         }, { status: 422 });
@@ -169,11 +191,13 @@ async function postUpload(req: Request) {
       for (const file of texFiles) {
         const relPath = sanitizeTexPath(file.name);
         if (!relPath) {
+          removeQuietly(paths.inputs, true);
           return Response.json({
             error: `${file.name} is not a usable .tex path`,
           }, { status: 422 });
         }
         if (file.size > MAX_TEX_FILE_BYTES) {
+          removeQuietly(paths.inputs, true);
           return Response.json({
             error: `${relPath} is larger than ${
               MAX_TEX_FILE_BYTES / 1024 / 1024
@@ -184,6 +208,7 @@ async function postUpload(req: Request) {
         named.push({ relPath, file });
       }
       if (total > MAX_TEX_TOTAL_BYTES) {
+        removeQuietly(paths.inputs, true);
         return Response.json({
           error: `The LaTeX source is larger than ${
             MAX_TEX_TOTAL_BYTES / 1024 / 1024
@@ -191,24 +216,37 @@ async function postUpload(req: Request) {
         }, { status: 422 });
       }
       const texDir = join(paths.inputs, "tex");
+      const all: Uint8Array[] = [];
       for (const { relPath, file } of named) {
         const dest = join(texDir, relPath);
         Deno.mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
-        Deno.writeFileSync(dest, new Uint8Array(await file.arrayBuffer()));
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        Deno.writeFileSync(dest, bytes);
+        all.push(new TextEncoder().encode(relPath + "\0"), bytes);
       }
       paperInputs = { paperTex: texDir };
       label = uploadLabel(
         fields["title"],
         folderLabel(named.map((n) => n.relPath)),
       );
+      record.paperName = folderLabel(named.map((n) => n.relPath)) ?? "tex";
+      const joined = new Uint8Array(all.reduce((n, b) => n + b.length, 0));
+      let at = 0;
+      for (const b of all) {
+        joined.set(b, at);
+        at += b.length;
+      }
+      record.paperSha256 = await sha256(joined);
     }
   } catch (error) {
+    removeQuietly(paths.inputs, true);
     return failed(error, 502);
   }
   return start(label, scalars, {
     id,
     ...paperInputs,
     rubric: join(paths.inputs, "rubric_branch.json"),
+    record,
   });
 }
 
@@ -221,7 +259,7 @@ export const handler = define.handlers({
     if (!contentType.includes("multipart/form-data")) {
       return Response.json({
         error:
-          "Attach the paper's LaTeX source and the rubric JSON as a multipart form",
+          "Attach the paper (a LaTeX source or a PDF) and the rubric as a multipart form",
       }, { status: 400 });
     }
     return postUpload(ctx.req);

@@ -18,10 +18,24 @@ if TYPE_CHECKING:
 
 class Meter(Protocol):
     """A backend that reports what it has spent so far. The `PydanticAI` adapter is one; a
-    stub that counts its own calls is another."""
+    stub that counts its own calls is another. A meter that also carries a `cost` (USD the
+    provider actually billed, as the OpenCode adapter does) is charged by that figure
+    instead of by its tokens."""
 
     @property
     def usage(self) -> Usage: ...
+
+
+def billed(meters: tuple[Meter, ...], price: Price) -> float:
+    """USD across meters: the provider's own figure where a meter has one, the catalog
+    price of its tokens otherwise."""
+    total = 0.0
+    for meter in meters:
+        cost = getattr(meter, "cost", None)
+        total += (
+            float(cost) if isinstance(cost, (int, float)) else price.of(meter.usage)
+        )
+    return total
 
 
 @dataclass(frozen=True)
@@ -66,11 +80,12 @@ class SpendLimit(Plugin):
             raise ValueError("SpendLimit needs price= to convert tokens to usd=")
         self.tokens = tokens
         self.requests = requests
-        self.usd = usd
+        self.cap_usd = usd
         self.price = price or Price()
         self.skipped = 0
         self._meters = meters
         self._base = self._total()
+        self._base_usd = billed(meters, self.price)
 
     def _total(self) -> Usage:
         total = Usage()
@@ -84,6 +99,11 @@ class SpendLimit(Plugin):
         return self._total() - self._base
 
     @property
+    def usd(self) -> float:
+        """Dollars since this limit was built, by each meter's own reckoning."""
+        return billed(self._meters, self.price) - self._base_usd
+
+    @property
     def stopped(self) -> bool:
         return self.skipped > 0
 
@@ -93,7 +113,7 @@ class SpendLimit(Plugin):
             return True
         if self.requests is not None and spent.requests >= self.requests:
             return True
-        return self.usd is not None and self.price.of(spent) >= self.usd
+        return self.cap_usd is not None and self.usd >= self.cap_usd
 
     def report(self) -> dict[str, Any]:
         spent = self.spent
@@ -101,7 +121,7 @@ class SpendLimit(Plugin):
             "input_tokens": spent.input_tokens,
             "output_tokens": spent.output_tokens,
             "requests": spent.requests,
-            "usd": self.price.of(spent),
+            "usd": self.usd,
             "skipped": self.skipped,
             "stopped": self.stopped,
         }

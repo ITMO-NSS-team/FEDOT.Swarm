@@ -47,13 +47,52 @@ export interface Graph {
   topic: string;
 }
 
+/** What an OpenCode voice reported for one round, beside the text it posted. */
+export interface PostMeta {
+  files: string[];
+  cost: number;
+  tokens: number;
+  toolCalls: number;
+  seconds: number;
+  timedOut: boolean;
+  error: string | null;
+}
+
 export interface Post {
   producer: string;
   step: number;
   text: string;
+  meta?: PostMeta;
 }
 
-export type RunState = "starting" | "running" | "done" | "failed" | "stopped";
+/** One line of the usage sidecar `run.py` appends to after every superstep. */
+export interface UsageTick {
+  index: number;
+  fired: number;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  usd: number;
+  workers_usd?: number;
+  at: number;
+}
+
+/** `lost` is a run this server no longer owns and whose process is gone: it was running when
+ * the server restarted, and nothing will ever finish it. */
+export type RunState =
+  | "starting"
+  | "running"
+  | "done"
+  | "failed"
+  | "stopped"
+  | "lost";
+
+export const terminal = (state: RunState) =>
+  state === "done" || state === "failed" || state === "stopped" ||
+  state === "lost";
+
+export const live = (state: RunState) =>
+  state === "running" || state === "starting";
 
 export interface RunRequest {
   topic: string;
@@ -79,9 +118,12 @@ export interface Run extends RunRequest {
   error: string | null;
   /** The report `run.py` writes when it finishes. */
   report: Record<string, unknown> | null;
+  /** The child's pid, so a restarted server can tell a live run from a lost one. */
+  pid?: number | null;
 }
 
-export const models = [
-  "openrouter:qwen/qwen3.7-flash",
-  "openrouter:qwen/qwen3.8-flash",
-] as const;
+/** Who is working right now, as `workers.LiveBoard` writes it. */
+export type LiveBoard = Record<
+  string,
+  { state: "working" | "idle"; round: number; since: number }
+>;

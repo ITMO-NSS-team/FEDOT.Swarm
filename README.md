@@ -9,14 +9,7 @@
 
 </div>
 
-> [!WARNING]
-> Early development (v0.1). The API will change between versions.
-
-A tiny typed dataflow engine for systems that build up a shared state, and the
-harness that orchestrates the agents inside them. Bring agents from any
-framework, mix them with plain code and raw model calls, and run them as one
-typed system instead of gluing them together by hand. A thin LLM layer
-(PydanticAI by default) on top turns it into a multi-agent framework.
+A tiny typed dataflow engine for systems that build up a shared state, and the harness that orchestrates the agents inside them. Bring agents from any framework, mix them with plain code and raw model calls, and run them as one typed system instead of gluing them together by hand. A thin LLM layer (PydanticAI by default) on top turns it into a multi-agent framework.
 
 ## Install
 
@@ -31,42 +24,39 @@ uv sync --all-packages
 ## Packages
 
 - [`fedotmas`](packages/fedotmas): the engine and typed SDK.
-- [`fedotmas-llm`](packages/fedotmas-llm): the LLM extension. Agents, provider
-  backends, serving. Early.
-- [`fedotmas-meta`](packages/fedotmas-meta): the meta-agent that builds systems
-  from a task description. Early.
-- [`web`](web): the demonstration front end. Compose a swarm, watch it argue on
-  an influence graph, and see what it spent. Deno and Fresh, not part of the
-  Python workspace.
+- [`fedotmas-llm`](packages/fedotmas-llm): the LLM extension. Agents, provider backends, serving. Early.
+- [`fedotmas-meta`](packages/fedotmas-meta): the meta-agent that builds systems from a task description. Early.
+- [`web`](web): the demonstration front end. Compose a swarm, watch it argue on an influence graph, and see what it spent.
 
 ## Running the demo
 
-`benchmarks/swarm` and [`benchmarks/paperbench`](benchmarks/paperbench) both run
-on OpenRouter (`OPENROUTER_API_KEY` in `.env`) through `fedotmas-llm`'s
-`pydantic-ai` extra, one shared venv for the whole workspace:
+The demo reproduces the code of a paper with a swarm of OpenCode coding agents, graded against one PaperBench rubric branch, and shows the run live in the web front end. Everything runs from one container; the only input is an OpenRouter key.
 
 ```bash
-uv sync --all-packages --extra pydantic-ai
+cp .env.example .env      # OPENROUTER_API_KEY=sk-or-...
+just up                   # builds the image and serves http://localhost:8000
+```
+
+The image carries marker (PDF to markdown with layout, tables, equations and OCR), OpenCode 1.18.20 and the built front end; runs and their workspaces live in the `fedotmas-data` volume. [docs/paperbench.md](docs/paperbench.md) walks through composing, watching, exploring and reproducing a run.
+
+From a checkout instead, with OpenCode on the PATH and `marker_single` as an optional `uv tool` (pymupdf is the fallback):
+
+```bash
+uv sync --all-packages --extra pydantic-ai --extra opencode --group paperbench
+just web                  # the dev front end on http://127.0.0.1:5173
+just smoke                # a two-agent, two-round run from the CLI (about $0.10)
+```
+
+`benchmarks/swarm` is the free-topic swarm the same front end also starts:
+
+```bash
 uv run python benchmarks/swarm/run.py --personas 2 --rounds 1 --usd 0.001
 ```
 
-PaperBench (also reachable from the same web UI, as "PaperBench" in Compose)
-needs one more group for `--paper-pdf` support — add `--group paperbench` to the
-`uv sync` above and it runs the same way; its own
-[README](benchmarks/paperbench/README.md) is only for the extra flags (paper
-source, rubric, spend caps), not required just to get it running.
-
-The [`web`](web) front end drives both:
-
-```bash
-cd web
-deno install --frozen
-deno task dev
-```
+`just verify` runs ruff, ty, pytest and the web checks; `just e2e` drives the front end in headless Chromium against a fake runner.
 
 ## Articles
 
 - **Does going multi-agent pay off, and can you auto-pick a pattern per task?**
-  ·
-  [EN](https://dev.to/enorth/does-going-multi-agent-pay-off-and-can-you-auto-pick-a-pattern-per-task-15ld)
+  · [EN](https://dev.to/enorth/does-going-multi-agent-pay-off-and-can-you-auto-pick-a-pattern-per-task-15ld)
   · [RU](https://habr.com/ru/articles/1047422/)

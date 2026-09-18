@@ -36,6 +36,9 @@ export const handler = define.handlers({
         error: run.error,
         usage: usage(paths.usage),
         posts: all.filter((p) => p.step <= step).slice(-60),
+        run,
+        progress: null,
+        live: {},
       }),
       {
         headers: {

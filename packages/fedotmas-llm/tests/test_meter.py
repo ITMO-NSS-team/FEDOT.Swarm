@@ -208,3 +208,29 @@ def test_a_limit_reports_what_it_spent_and_what_it_refused():
         "skipped": 0,
         "stopped": False,
     }
+
+
+class Billing(MeteredStub):
+    """A backend that knows what the provider charged, the way the OpenCode adapter does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cost = 0.0
+
+    async def complete(self, call: Call, view: View) -> Any:
+        self.cost += 0.05
+        return await super().complete(call, view)
+
+
+async def test_a_meter_with_its_own_bill_is_charged_by_it_not_by_its_tokens():
+    priced, billing = MeteredStub(), Billing()
+    limit = SpendLimit(priced, billing, usd=0.12, price=Price(input=1e6, output=0))
+    # priced: $100 per call at this price; billing: $0.05 per call whatever its tokens
+    await billing.complete(Call("p", "x"), Store().snapshot())
+    await billing.complete(Call("p", "x"), Store().snapshot())
+    assert limit.usd == pytest.approx(0.10)
+    assert not limit.over()
+    await billing.complete(Call("p", "x"), Store().snapshot())
+    assert limit.over()
+    assert limit.report()["usd"] == pytest.approx(0.15)
+    assert limit.spent.requests == 3

@@ -283,3 +283,79 @@ async def test_a_seat_keeps_its_first_occupant():
         preset.seed(TOPIC, CAST), goal="__never__", bind={"llm": Forgetful()}, budget=4
     )
     assert run.view.value("cast")["hired"] == {"seat_0": "You are voice 1."}
+
+
+def test_a_persona_factory_gets_the_conduct_the_template_and_the_activity():
+    from fedotmas import Rule
+    from fedotmas_meta.presets import post_text
+
+    made: list[tuple[str, str, str, dict]] = []
+
+    def factory(agent, prompt, template, when, meta) -> Rule:
+        made.append((agent.name, prompt, template, meta))
+
+        async def body(_: int, view: View) -> dict:
+            return {"report": f"{agent.name} worked", "files": ["a.py"]}
+
+        return Rule(
+            name=agent.name, fn=body, reads="tick", writes="post", when=when, meta=meta
+        )
+
+    preset = _preset(activity=(0.5, 0.5), persona_factory=factory)
+    board = _board(_spec(), preset)
+
+    assert [r.name for r in board.rules] == ["clock", "feed", *CAST]
+    assert [m[0] for m in made] == CAST
+    assert made[0][1] == f"You are the hawk.\n{CONDUCT}"
+    assert "{feed}" in made[0][2]
+    assert made[0][3] == {"activity_level": 0.5}
+    assert post_text({"report": "r", "files": []}) == "r"
+    assert post_text("plain") == "plain"
+    assert post_text({"x": 1}) == '{"x": 1}'
+
+
+async def test_a_structured_post_reads_as_its_report_on_the_feed():
+    from fedotmas import Rule
+
+    seen: list[str] = []
+
+    def factory(agent, prompt, template, when, meta) -> Rule:
+        async def body(tick: int, view: View) -> dict:
+            from fedotmas.ext import render
+
+            seen.append(render(template, tick, view, agent.name))
+            return {"report": f"{agent.name} round {tick}", "cost": 0.01}
+
+        return Rule(
+            name=agent.name, fn=body, reads="tick", writes="post", when=when, meta=meta
+        )
+
+    preset = _preset(
+        min_active=0, max_active=None, activity=(1.0, 1.0), persona_factory=factory
+    )
+    board = _board(_spec(["hawk", "dove"]), preset)
+
+    run = await board.run(preset.seed(TOPIC), goal="__never__", budget=3)
+
+    assert not run.errors
+    assert "hawk: hawk round 0" in seen[-1]
+    assert "cost" not in seen[-1]
+
+
+def test_seats_are_built_by_the_same_factory():
+    from fedotmas import Rule
+
+    names: list[str] = []
+
+    def factory(agent, prompt, template, when, meta) -> Rule:
+        names.append(agent.name)
+
+        async def body(_: int) -> str:
+            return "post"
+
+        return Rule(
+            name=agent.name, fn=body, reads="tick", writes="post", when=when, meta=meta
+        )
+
+    _board(_spec(), _live(persona_factory=factory))
+    assert names == ["seat_0", "seat_1", *CAST]

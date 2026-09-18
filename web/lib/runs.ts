@@ -1,91 +1,39 @@
-import { DatabaseSync } from "node:sqlite";
-import { dirname, join } from "node:path";
-import { dataDirectory, newRunId, projectRoot, runId, runPaths } from "@/lib/paths.ts";
-import type { Run, RunRequest, RunState } from "@/lib/types.ts";
+import { dirname } from "node:path";
+import { newRunId, projectRoot, runId, runPaths } from "@/lib/paths.ts";
+import {
+  pidAlive,
+  readJson,
+  Registry,
+  removeQuietly,
+  tail,
+} from "@/lib/registry.ts";
+import { type Run, type RunRequest, terminal } from "@/lib/types.ts";
 
-const registry = () => join(dataDirectory(), "web.sqlite3");
+const registry = new Registry<Run>("runs", "runs");
 
 /** Children this process owns. A run started by another coordinator is visible in the
  * registry but cannot be stopped from here, which is why `stop` reports what it did. */
 const children = new Map<string, Deno.ChildProcess>();
 
-function connect(): DatabaseSync {
-  Deno.mkdirSync(dataDirectory(), { recursive: true, mode: 0o700 });
-  Deno.mkdirSync(join(dataDirectory(), "runs"), { recursive: true, mode: 0o700 });
-  const db = new DatabaseSync(registry());
-  db.exec(
-    "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;",
-  );
-  db.exec(`CREATE TABLE IF NOT EXISTS runs (
-    id TEXT PRIMARY KEY NOT NULL,
-    payload TEXT NOT NULL,
-    started_at INTEGER NOT NULL
-  ) STRICT, WITHOUT ROWID;`);
-  return db;
-}
-
-function use<T>(action: (db: DatabaseSync) => T): T {
-  const db = connect();
-  try {
-    return action(db);
-  } finally {
-    db.close();
-  }
-}
-
-function save(run: Run) {
-  use((db) =>
-    db.prepare(
-      "INSERT INTO runs(id, payload, started_at) VALUES (?, ?, ?) " +
-        "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
-    ).run(run.id, JSON.stringify(run), run.startedAt)
-  );
-}
-
 export function read(id: string): Run | null {
-  runId(id);
-  const row = use((db) =>
-    db.prepare("SELECT payload FROM runs WHERE id = ?").get(id)
-  ) as { payload: string } | undefined;
-  return row ? settle(JSON.parse(row.payload) as Run) : null;
+  const row = registry.read(runId(id));
+  return row ? settle(row) : null;
 }
 
 export function list(): Run[] {
-  const rows = use((db) =>
-    db.prepare("SELECT payload FROM runs ORDER BY started_at DESC LIMIT 200").all()
-  ) as { payload: string }[];
-  return rows.map((r) => settle(JSON.parse(r.payload) as Run));
+  return registry.list().map(settle);
 }
 
-/** A provider key can reach a traceback through a request header; nothing derived from a
- * child's stderr leaves this process without passing through here. */
-function redact(text: string) {
-  return text
-    .replace(/\b(sk|or)-[A-Za-z0-9_-]{8,}/g, "[redacted]")
-    .replace(/([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET)[A-Za-z0-9_]*\s*[=:]\s*)\S+/gi, "$1[redacted]");
-}
-
-function tail(path: string, lines = 4) {
-  try {
-    const text = Deno.readTextFileSync(path).trimEnd();
-    return redact(text.split("\n").slice(-lines).join("\n")).slice(-600);
-  } catch {
-    return null;
-  }
+export function running(): number {
+  return list().filter((run) => !terminal(run.state)).length;
 }
 
 /** Brings a stored record up to date with the filesystem: a finished child leaves a report,
- * and a crashed one leaves only a log. Called on every read so a restarted server still
- * resolves runs it no longer owns. */
+ * a crashed one leaves only a log, and a running row with no process behind it is lost. */
 function settle(run: Run): Run {
-  if (run.state === "done" || run.state === "failed") return run;
+  if (terminal(run.state)) return run;
   const paths = runPaths(run.id);
-  let report: Record<string, unknown> | null = null;
-  try {
-    report = JSON.parse(Deno.readTextFileSync(paths.report));
-  } catch {
-    report = null;
-  }
+  const report = readJson<Record<string, unknown>>(paths.report);
   if (report) {
     const settled: Run = {
       ...run,
@@ -93,12 +41,19 @@ function settle(run: Run): Run {
       endedAt: run.endedAt ?? Date.now(),
       report,
     };
-    save(settled);
+    registry.save(settled);
     return settled;
   }
-  if (run.state === "running" && !children.has(run.id)) {
-    // no report, no child: either another coordinator owns it or the process died
-    return run;
+  if (!children.has(run.id) && !pidAlive(run.pid)) {
+    const lost: Run = {
+      ...run,
+      state: "lost",
+      endedAt: Date.now(),
+      error:
+        "The server lost this run: its process is gone and no report was written.",
+    };
+    registry.save(lost);
+    return lost;
   }
   return run;
 }
@@ -138,7 +93,6 @@ export function create(request: RunRequest): Run {
   const id = newRunId();
   const paths = runPaths(id);
   Deno.mkdirSync(dirname(paths.db), { recursive: true, mode: 0o700 });
-
   const run: Run = {
     ...request,
     id,
@@ -147,60 +101,91 @@ export function create(request: RunRequest): Run {
     endedAt: null,
     error: null,
     report: null,
+    pid: null,
   };
-  save(run);
-
-  const log = Deno.openSync(paths.log, { create: true, write: true, truncate: true });
-  const child = new Deno.Command("uv", {
-    args: args(id, request),
-    cwd: projectRoot(),
-    stdin: "null",
-    stdout: "null",
-    stderr: "piped",
-  }).spawn();
+  const log = Deno.openSync(paths.log, {
+    create: true,
+    write: true,
+    truncate: true,
+  });
+  let child: Deno.ChildProcess;
+  try {
+    child = new Deno.Command("uv", {
+      args: args(id, request),
+      cwd: projectRoot(),
+      stdin: "null",
+      stdout: "null",
+      stderr: "piped",
+    }).spawn();
+  } catch (error) {
+    log.close();
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not start run.py: ${detail}`);
+  }
   children.set(id, child);
-
   child.stderr.pipeTo(log.writable).catch(() => {});
-  child.status.then((status) => {
+  const started: Run = { ...run, state: "running", pid: child.pid };
+  registry.save(started);
+  child.status.then(() => {
     children.delete(id);
-    const current = read(id);
+    const current = registry.read(id);
     if (!current || current.state === "done") return;
-    let report: Record<string, unknown> | null = null;
-    try {
-      report = JSON.parse(Deno.readTextFileSync(paths.report));
-    } catch {
-      report = null;
-    }
-    const state: RunState = report
-      ? "done"
-      : current.state === "stopped"
-      ? "stopped"
-      : "failed";
-    save({
+    const report = readJson<Record<string, unknown>>(paths.report);
+    registry.save({
       ...current,
-      state,
+      state: report
+        ? "done"
+        : current.state === "stopped"
+        ? "stopped"
+        : "failed",
       endedAt: Date.now(),
       report,
       error: report ? null : tail(paths.log),
     });
   });
-
-  const started: Run = { ...run, state: "running" };
-  save(started);
   return started;
 }
 
-/** Stops a run this process owns. Anything the provider has already been asked for still
- * costs money: this ends the conversation, it does not cancel in-flight requests. */
+/** Ends the conversation. Requests already with the provider are still billed, so the
+ * caller says what was stopped rather than claiming the run cost nothing more. */
 export function stop(id: string): boolean {
   const child = children.get(runId(id));
   if (!child) return false;
-  const current = read(id);
-  if (current) save({ ...current, state: "stopped" });
+  const current = registry.read(id);
+  if (current && !terminal(current.state)) {
+    registry.save({ ...current, state: "stopped" });
+  }
   try {
     child.kill("SIGTERM");
   } catch {
     return false;
   }
   return true;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export async function remove(id: string) {
+  const run = registry.read(runId(id));
+  if (!run) return;
+  if (!terminal(run.state)) {
+    stop(id);
+    const deadline = Date.now() + 5000;
+    while (children.has(id) && Date.now() < deadline) await sleep(250);
+  }
+  const paths = runPaths(id);
+  registry.delete(id);
+  for (
+    const path of [
+      paths.db,
+      `${paths.db}-wal`,
+      `${paths.db}-shm`,
+      paths.spec,
+      paths.report,
+      paths.usage,
+      paths.log,
+    ]
+  ) {
+    removeQuietly(path);
+  }
 }

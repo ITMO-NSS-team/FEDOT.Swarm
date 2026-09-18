@@ -2,18 +2,18 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Simulation } from "@/lib/force.ts";
 import { feedWidth } from "@/lib/influence.ts";
-import type { Graph, GraphNode, Post, RunState } from "@/lib/types.ts";
+import {
+  type Graph,
+  type GraphNode,
+  live as isLive,
+  type LiveBoard,
+  type Post,
+  type RunState,
+  type UsageTick,
+} from "@/lib/types.ts";
 
-interface UsageTick {
-  index: number;
-  fired: number;
-  requests: number;
-  input_tokens: number;
-  output_tokens: number;
-  usd: number;
-}
-
-interface Snapshot {
+/** What `/graph` returns for either kind of run. */
+export interface Snapshot {
   graph: Graph;
   step: number;
   state: RunState;
@@ -21,91 +21,73 @@ interface Snapshot {
   error: string | null;
   usage: UsageTick[];
   posts: Post[];
+  live?: LiveBoard;
 }
 
-const live = (state: RunState) => state === "running" || state === "starting";
-
-function money(value: number) {
+export function money(value: number) {
   if (value === 0) return "$0";
   return value < 0.01 ? `$${value.toFixed(6)}` : `$${value.toFixed(4)}`;
 }
 
+function ago(since: number) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - since));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 export interface SwarmViewProps {
-  /** Base for polling and stopping the run, e.g. `/api/runs/<id>` or
-   * `/api/paperbench/<id>`: this component appends `/graph` itself and, if `canStop`,
-   * issues its DELETE straight at this base — same contract both registries already
-   * expose. */
-  base: string;
+  snapshot: Snapshot | null;
+  failure: string | null;
   /** Shown as the room's subject until the graph's own `topic` fact loads. */
   fallbackTopic: string;
   rounds: number;
   /** The state the caller already knows, shown until the first poll lands. */
   initialState: RunState;
-  /** Precomputed, since what a run is capped by differs by registry (a spend axis for
-   * the free-topic swarm, a wall-clock timeout for PaperBench). */
+  /** Precomputed, since what a run is capped by differs by registry. */
   cap: string;
-  canStop?: boolean;
-  /** Extra panels appended to the scrolling side column, e.g. PaperBench's score/files/
-   * checklist — so a caller with more to show than the spend meter and the feed still
-   * fits one screen instead of running a second, page-scrolling section below the graph. */
+  /** The round being shown, or null to follow the newest. */
+  scrub: number | null;
+  onScrub: (step: number | null) => void;
+  onStop?: () => Promise<string | null>;
+  onOpenWorkspace?: (voice: string) => void;
+  /** Extra panels appended to the side column. */
   children?: ComponentChildren;
 }
 
+/** The influence graph, the spend meter, the scrubber and the feed. Pure presentation: the
+ * island that owns the poller decides what snapshot this shows. */
 export function SwarmView(
-  { base, fallbackTopic, rounds, initialState, cap, canStop = false, children }:
-    SwarmViewProps,
+  {
+    snapshot,
+    failure,
+    fallbackTopic,
+    rounds,
+    initialState,
+    cap,
+    scrub,
+    onScrub,
+    onStop,
+    onOpenWorkspace,
+    children,
+  }: SwarmViewProps,
 ) {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [following, setFollowing] = useState(true);
-  const [scrub, setScrub] = useState<number | null>(null);
+  const [draft, setDraft] = useState<number | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [, redraw] = useState(0);
 
   const simulation = useRef(new Simulation());
   const svg = useRef<SVGSVGElement>(null);
   const dragging = useRef<string | null>(null);
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const step = scrub;
   const state = snapshot?.state ?? initialState;
-
-  useEffect(() => {
-    let stop = false;
-    const pull = async () => {
-      const query = step === null ? "" : `?step=${step}`;
-      try {
-        const response = await fetch(`${base}/graph${query}`);
-        if (!response.ok) {
-          throw new Error((await response.json()).error ?? "unavailable");
-        }
-        if (!stop) {
-          setSnapshot(await response.json());
-          setFailure(null);
-        }
-      } catch (error) {
-        if (!stop) {
-          setFailure(
-            error instanceof Error ? error.message : "The run is unreachable",
-          );
-        }
-      }
-    };
-    pull();
-    // a superstep is seconds long and commits as one batch, so polling at this cadence
-    // never shows a half-written round
-    const timer = setInterval(() => {
-      if (live(state)) pull();
-    }, 2000);
-    return () => {
-      stop = true;
-      clearInterval(timer);
-    };
-  }, [base, step, state, following]);
-
   const graph = snapshot?.graph;
-  // -1 means the store has no committed superstep yet (a run just starting, or one from
-  // before this graph existed at all)
-  const roundsDone = Math.max(0, graph?.steps ?? 0);
+  const following = scrub === null;
+  // graph.steps is the highest committed superstep, -1 before the first one lands
+  const committed = Math.max(0, (graph?.steps ?? -1) + 1);
+  const roundsDone = Math.min(rounds, committed);
+  const shown = draft ?? snapshot?.step ?? -1;
 
   useEffect(() => {
     if (!graph) return;
@@ -117,16 +99,28 @@ export function SwarmView(
 
   useEffect(() => {
     let frame = 0;
+    let idle = 0;
     const loop = () => {
       const sim = simulation.current;
       if (sim.energy > 0.05 || dragging.current) {
+        idle = 0;
         sim.tick();
         redraw((n) => n + 1);
+      } else {
+        idle++;
       }
-      frame = requestAnimationFrame(loop);
+      // once the layout has settled, wake up rarely instead of every frame
+      frame = idle > 30
+        ? setTimeout(() => {
+          frame = requestAnimationFrame(loop);
+        }, 250) as unknown as number
+        : requestAnimationFrame(loop);
     };
     frame = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(frame);
+    };
   }, []);
 
   const byName = useMemo(() => {
@@ -135,16 +129,24 @@ export function SwarmView(
     return map;
   }, [graph]);
 
+  const lastPost = useMemo(() => {
+    const map = new Map<string, Post>();
+    for (const post of snapshot?.posts ?? []) map.set(post.producer, post);
+    return map;
+  }, [snapshot?.posts]);
+
   const spent = snapshot?.usage.at(-1);
-  // below the feed window every reader holds every post, so the graph is complete by
-  // construction and its shape means nothing yet
   const written = (graph?.nodes ?? []).reduce((n, node) => n + node.posts, 0);
   const saturated = written > feedWidth;
-
   const thinned = graph?.thinned ?? 0;
   const spoke = (graph?.nodes ?? []).filter((n) => n.posts > 0).length;
   const box = simulation.current.extent();
   const detail = selected ? byName.get(selected) : undefined;
+  const detailLive = detail ? snapshot?.live?.[detail.name] : undefined;
+  const detailPost = detail ? lastPost.get(detail.name) : undefined;
+  const working = Object.entries(snapshot?.live ?? {}).filter(([, v]) =>
+    v.state === "working"
+  );
 
   const heard = detail
     ? (graph?.edges ?? []).filter((e) => e.from === detail.name)
@@ -185,6 +187,29 @@ export function SwarmView(
       if (point) point.fixed = false;
     }
     dragging.current = null;
+  };
+
+  const scrubTo = (value: number) => {
+    setDraft(value);
+    if (debounce.current) clearTimeout(debounce.current);
+    debounce.current = setTimeout(() => {
+      onScrub(value);
+      setDraft(null);
+    }, 150);
+  };
+
+  const stop = async () => {
+    if (!onStop || stopping) return;
+    setStopping(true);
+    try {
+      setNotice(await onStop());
+    } catch (error) {
+      setNotice(
+        error instanceof Error ? error.message : "Could not stop the run",
+      );
+    } finally {
+      setStopping(false);
+    }
   };
 
   return (
@@ -237,20 +262,30 @@ export function SwarmView(
               );
             })}
           </g>
-          <g class="swarm-nodes">
+          <g class="swarm-nodes" role="listbox" aria-label="Voices">
             {(graph?.nodes ?? []).map((node) => {
               const point = simulation.current.points.get(node.name);
               if (!point) return null;
               const radius = 4 + 2.4 * Math.sqrt(node.posts);
+              const busy = snapshot?.live?.[node.name]?.state === "working";
               return (
                 <g
                   key={node.name}
                   transform={`translate(${point.x} ${point.y})`}
-                  class={`node node-${node.kind}${selected === node.name ? " node-selected" : ""
-                    }${node.posts === 0 ? " node-silent" : ""}`}
-                  tabIndex={0}
-                  role="button"
-                  aria-label={`${node.name}, ${node.posts} posts`}
+                  class={`node node-${node.kind}${
+                    selected === node.name ? " node-selected" : ""
+                  }${node.posts === 0 ? " node-silent" : ""}${
+                    busy ? " node-busy" : ""
+                  }`}
+                  tabIndex={selected === node.name ||
+                      (!selected && node.posts > 0)
+                    ? 0
+                    : -1}
+                  role="option"
+                  aria-selected={selected === node.name}
+                  aria-label={`${node.name}, ${node.posts} posts${
+                    busy ? ", working" : ""
+                  }`}
                   onClick={() =>
                     setSelected(selected === node.name ? null : node.name)}
                   onKeyDown={(e) => {
@@ -267,8 +302,9 @@ export function SwarmView(
                     );
                   }}
                 >
+                  {busy && <circle r={radius + 4} class="node-halo" />}
                   <circle r={radius} />
-                  {(node.posts > 2 || selected === node.name) && (
+                  {(node.posts > 2 || selected === node.name || busy) && (
                     <text y={radius + 11}>{node.name}</text>
                   )}
                 </g>
@@ -280,12 +316,23 @@ export function SwarmView(
         <div class="swarm-title">
           <h1>Influence graph</h1>
           <p className="truncate">{graph?.topic ?? fallbackTopic}</p>
+          {!snapshot && !failure && (
+            <p class="swarm-count skeleton-text">Loading the room</p>
+          )}
           {graph && graph.nodes.length > 0 && (
             <p class="swarm-count">
               {spoke} of {graph.nodes.length} have spoken, {written}{" "}
               {written === 1 ? "post" : "posts"}{" "}
               in all. The activity throttle admits a few voices a round whatever
               the cast holds.
+            </p>
+          )}
+          {working.length > 0 && (
+            <p class="swarm-live">
+              Working now:{" "}
+              {working.map(([name, v]) => `${name} (${ago(v.since)})`).join(
+                ", ",
+              )}
             </p>
           )}
           {graph && !graph.ranked && (
@@ -309,11 +356,10 @@ export function SwarmView(
           <span class="legend-item legend-persona">Written into the cast</span>
           <span class="legend-item legend-seat">Seated mid-run</span>
           <span class="legend-item legend-silent">Never spoke</span>
+          <span class="legend-item legend-busy">Inside a session now</span>
           <span class="legend-note">
             An edge runs from a reader to an author whose post ranked into its
             feed. Size is posts made, thickness is the share of the window held.
-            A voice matches its own vocabulary best, so a loud one crowds its
-            own feed and reads fewer others.
             {thinned > 0 && ` The ${thinned} weakest edges are not drawn.`}
           </span>
         </div>
@@ -349,11 +395,49 @@ export function SwarmView(
                 <dt>Spoke</dt>
                 <dd>
                   {detail.posts
-                    ? `rounds ${detail.firstStep}–${detail.lastStep}`
+                    ? `rounds ${detail.firstStep + 1}–${detail.lastStep + 1}`
                     : "not yet"}
                 </dd>
               </div>
             </dl>
+            {detailLive && (
+              <p class="swarm-activity">
+                {detailLive.state === "working"
+                  ? `Working in its workspace for ${
+                    ago(detailLive.since)
+                  } (round ${detailLive.round + 1}).`
+                  : `Idle since round ${detailLive.round + 1} ended.`}
+              </p>
+            )}
+            {detailPost?.meta && (
+              <dl class="swarm-meta">
+                <div>
+                  <dt>Last round</dt>
+                  <dd>
+                    {detailPost.meta.files.length}{" "}
+                    {detailPost.meta.files.length === 1 ? "file" : "files"}
+                    {" · "}
+                    {detailPost.meta.toolCalls} tool calls
+                  </dd>
+                </div>
+                <div>
+                  <dt>Cost</dt>
+                  <dd>
+                    {money(detailPost.meta.cost)}
+                    {" · "}
+                    {detailPost.meta.tokens.toLocaleString("en")} tok
+                  </dd>
+                </div>
+                <div>
+                  <dt>Took</dt>
+                  <dd>
+                    {Math.round(detailPost.meta.seconds)}s
+                    {detailPost.meta.timedOut ? ", timed out" : ""}
+                    {detailPost.meta.error ? `, ${detailPost.meta.error}` : ""}
+                  </dd>
+                </div>
+              </dl>
+            )}
             {detail.prompt && <p class="swarm-character">{detail.prompt}</p>}
             {heard.length > 0 && (
               <>
@@ -372,6 +456,15 @@ export function SwarmView(
                   ))}
                 </ul>
               </>
+            )}
+            {onOpenWorkspace && detail.kind === "persona" && (
+              <button
+                type="button"
+                class="secondary-button swarm-open"
+                onClick={() => onOpenWorkspace(detail.name)}
+              >
+                Open workspace
+              </button>
             )}
           </aside>
         )}
@@ -405,6 +498,12 @@ export function SwarmView(
                     <dd>{roundsDone} of {rounds}</dd>
                   </div>
                 </dl>
+                {spent.workers_usd !== undefined && spent.workers_usd > 0 && (
+                  <p class="meter-cap">
+                    Coding agents billed {money(spent.workers_usd)}{" "}
+                    by OpenCode's own count.
+                  </p>
+                )}
               </>
             )
             : (
@@ -416,26 +515,22 @@ export function SwarmView(
               </dl>
             )}
           <p class="meter-cap">Cap: {cap}</p>
-          {snapshot?.report != null && (
+          {snapshot?.report != null && snapshot.report.reason !== undefined && (
             <p class="meter-reason">
-              Ended on <strong>{String(snapshot.report.reason ?? "?")}</strong>.
+              Ended on <strong>{String(snapshot.report.reason)}</strong>.
             </p>
           )}
-          {canStop && live(state) && (
+          {onStop && isLive(state) && (
             <button
               type="button"
               class="secondary-button"
-              onClick={async () => {
-                const response = await fetch(base, {
-                  method: "DELETE",
-                });
-                const body = await response.json();
-                setFailure(body.detail ?? null);
-              }}
+              disabled={stopping}
+              onClick={stop}
             >
-              Stop the run
+              {stopping ? "Stopping…" : "Stop the run"}
             </button>
           )}
+          {notice && <p class="meter-reason" role="status">{notice}</p>}
         </section>
 
         <section class="panel scrubber">
@@ -447,8 +542,12 @@ export function SwarmView(
                 checked={following}
                 onChange={(e) => {
                   const on = (e.target as HTMLInputElement).checked;
-                  setFollowing(on);
-                  if (on) setScrub(null);
+                  if (on) {
+                    setDraft(null);
+                    onScrub(null);
+                  } else {
+                    onScrub(Math.max(0, snapshot?.step ?? 0));
+                  }
                 }}
               />
               <span>Follow</span>
@@ -457,16 +556,18 @@ export function SwarmView(
           <input
             type="range"
             min={0}
-            max={roundsDone}
-            value={Math.max(0, snapshot?.step ?? 0)}
-            disabled={following}
+            max={Math.max(0, committed - 1)}
+            value={Math.max(0, shown)}
+            disabled={following || committed === 0}
             onInput={(e) =>
-              setScrub(Number((e.target as HTMLInputElement).value))}
+              scrubTo(Number((e.target as HTMLInputElement).value))}
           />
           <p class="hint">
-            Round {Math.max(0, snapshot?.step ?? 0)} of{" "}
-            {roundsDone}. The graph is rebuilt from the posts committed
-            by that round.
+            {committed === 0
+              ? "No round has been committed yet."
+              : `Round ${
+                Math.max(0, shown) + 1
+              } of ${committed}. The graph is rebuilt from the posts committed by that round.`}
           </p>
         </section>
 
@@ -484,11 +585,20 @@ export function SwarmView(
                 >
                   {post.producer}
                 </button>
-                <span class="feed-step">round {post.step}</span>
+                <span class="feed-step">round {post.step + 1}</span>
+                {post.meta && (
+                  <span class="feed-step">
+                    {post.meta.files.length} files · {money(post.meta.cost)}
+                    {post.meta.timedOut ? " · timed out" : ""}
+                  </span>
+                )}
                 <p>{post.text}</p>
               </li>
             ))}
-            {!snapshot?.posts.length && (
+            {!snapshot && (
+              <li class="feed-empty skeleton-text">Loading the feed</li>
+            )}
+            {snapshot && !snapshot.posts.length && (
               <li class="feed-empty">Nothing posted yet.</li>
             )}
           </ol>

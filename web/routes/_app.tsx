@@ -11,7 +11,8 @@ export default define.page(({ Component }) => (
         name="description"
         content="Compose a swarm of low-resource agents, watch it argue, and see what it spent."
       />
-      <title>FEDOT.MAS</title>
+      <title>FEDOT.Swarm</title>
+      <link rel="icon" type="image/svg+xml" href="/icon-swarm.svg" />
     </head>
     <body>
       <Component />

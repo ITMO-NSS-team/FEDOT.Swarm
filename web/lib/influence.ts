@@ -1,4 +1,10 @@
-import type { Graph, GraphEdge, GraphNode, NodeKind, Post } from "@/lib/types.ts";
+import type {
+  Graph,
+  GraphEdge,
+  GraphNode,
+  NodeKind,
+  Post,
+} from "@/lib/types.ts";
 
 /** Mirrors `SwarmPreset.feed_width` and `FEED_WIDTH` in `benchmarks/swarm/run.py`. A reader's
  * feed holds this many posts, so it is also the denominator of an edge's weight. */

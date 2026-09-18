@@ -1,6 +1,6 @@
 import { HttpError } from "fresh";
 import { Head } from "fresh/runtime";
-import { SwarmView } from "@/islands/SwarmView.tsx";
+import { TopicSwarm } from "@/islands/TopicSwarm.tsx";
 import { read } from "@/lib/runs.ts";
 import { define } from "@/utils.ts";
 
@@ -21,15 +21,15 @@ export default define.page(({ params }) => {
   return (
     <main id="main-content" class="wrap wrap-wide" tabIndex={-1}>
       <Head>
-        <title>{run.topic} · FEDOT.MAS</title>
+        <title>{run.topic} · FEDOT.Swarm</title>
+        <link rel="icon" type="image/svg+xml" href="/icon-swarm.svg" />
       </Head>
-      <SwarmView
+      <TopicSwarm
         base={`/api/runs/${run.id}`}
         fallbackTopic={run.topic}
         rounds={run.rounds}
         initialState={run.state}
         cap={cap(run)}
-        canStop
       />
     </main>
   );

@@ -97,7 +97,6 @@ Pipfile.lock
 #   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
-uv.lock
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -221,3 +220,9 @@ benchmarks/paperbench/out/
 .DS_Store
 
 /article
+
+# fetched by benchmarks/paperbench/fetch_paper.py, too large to commit
+benchmarks/paperbench/data/stochastic-interpolants/paper.pdf
+
+# for a local notes
+docs/internal

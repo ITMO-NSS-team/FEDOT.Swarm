@@ -11,7 +11,7 @@ export default define.page(({ error }) => {
   return (
     <main id="main-content" class="wrap error-page" tabIndex={-1}>
       <Head>
-        <title>{title} · FEDOT.MAS</title>
+        <title>{title} · FEDOT.Swarm</title>
       </Head>
       <span class="error-code">{status}</span>
       <h1>{title}</h1>

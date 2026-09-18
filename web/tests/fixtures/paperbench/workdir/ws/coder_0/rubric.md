@@ -1,0 +1,76 @@
+# Rubric
+
+Branch requirement: The core contributions of the paper have been reproduced.
+
+70 leaves, graded by reading the code, never by running it. Weight in brackets.
+
+- [1] Code has been implemented such that the zero-shot benchmark dataset ARC-c (https://huggingface.co/datasets/allenai/ai2_arc) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset ARC-e (https://huggingface.co/datasets/allenai/ai2_arc) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset BoolQ (https://huggingface.co/datasets/google/boolq) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset HellaSwag (https://rowanzellers.com/hellaswag/) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset PiQA (https://github.com/ybisk/ybisk.github.io/tree/master/piqa) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset SciQ (https://huggingface.co/datasets/allenai/sciq) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset TriviaQA (https://huggingface.co/datasets/mandarjoshi/trivia_qa) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset WinoGrande (https://huggingface.co/datasets/allenai/winogrande) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the zero-shot benchmark dataset Lambada (https://huggingface.co/datasets/EleutherAI/lambada_openai) can be used, obtaining it from its official source or equivalent mirrors
+- [1] The evaluation harness has been reproduced, either by directly using the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or by reproducing the Language Model Evaluation Harness
+- [1] Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the GPT2 family of models
+- [1] The implementation of CFG which can be used for the GPT2 family of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength
+- [1] As outlined in Section 3.1, the implementation of CFG which can be used for the GPT2 family of models starts the unconditional prompt $\log p_{\theta}(w_i | w_{j < i})$ with the last token of the initial prompt
+- [1] Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Pythia family of models
+- [1] The implementation of CFG which can be used for the Pythia family of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength
+- [1] As outlined in Section 3.1, the implementation of CFG which can be used for the Pythia family of models starts the unconditional prompt $\log p_{\theta}(w_i | w_{j < i})$ with the last token of the initial prompt
+- [1] Code has been implemented such that the GSM8K dataset for arithmetic reasoning tasks (https://huggingface.co/datasets/openai/gsm8k) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the AQuA dataset for arithmetic reasoning tasks (https://huggingface.co/datasets/nguyen-brat/aqua) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Guanaco65B model.
+- [1] The implementation of CFG which can be used for the Guanaco65B model includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength
+- [1] As outlined in Section 3.1, the implementation of CFG which can be used for the Guanaco65B model starts the unconditional prompt $\log p_{\theta}(w_i | w_{j < i})$ with the last token of the initial prompt.
+- [1] Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the WizardLM-30B model.
+- [1] The implementation of CFG which can be used for the WizardLM-30B model includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength
+- [1] As outlined in Section 3.1, the implementation of CFG which can be used for the WizardLM-30B model starts the unconditional prompt $\log p_{\theta}(w_i | w_{j < i})$ with the last token of the initial prompt.
+- [1] Code has been implemented such that when Guanaco65B is evaluated on GSM8k, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.
+- [1] Code has been implemented such that when evaluated, Guanaco65B is prompted with the few-shot prompt for GSM8k from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models
+- [1] Code has been implemented such that when Guanaco65B is evaluated on GSM8k, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.
+- [1] Code has been implemented such that Guanaco65B can be evaluated on GSM8k with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)
+- [1] Code has been implemented such that when WizardLM-30B is evaluated on GSM8k, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.
+- [1] Code has been implemented such that when evaluated, WizardLM-30B is prompted with the few-shot prompt for GSM8k from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models
+- [1] Code has been implemented such that when WizardLM-30B is evaluated on GSM8k, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.
+- [1] Code has been implemented such that WizardLM-30B can be evaluated on GSM8k with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)
+- [1] Code has been implemented such that when Guanaco65B is evaluated on AQuA, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.
+- [1] Code has been implemented such that when evaluated, Guanaco65B is prompted with the few-shot prompt for AQuA from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models
+- [1] Code has been implemented such that when Guanaco65B is evaluated on AQuA, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.
+- [1] Code has been implemented such that Guanaco65B can be evaluated on AQuA with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)
+- [1] Code has been implemented such that when WizardLM-30B is evaluated on AQuA, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.
+- [1] Code has been implemented such that when evaluated, WizardLM-30B is prompted with the few-shot prompt for AQuA from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models
+- [1] Code has been implemented such that when WizardLM-30B is evaluated on AQuA, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.
+- [1] Code has been implemented such that WizardLM-30B can be evaluated on AQuA with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)
+- [1] Code has been implemented such that the HumanEval dataset (https://github.com/openai/human-eval) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the CodeGen family of models (CodeGen-350M-mono, CodeGen-2B-mono, CodeGen-6B-mono)
+- [1] The implementation of CFG which can be used for the CodeGen family of models (CodeGen-350M-mono, CodeGen-2B-mono, CodeGen-6B-mono) includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength
+- [1] As outlined in Section 3.1, the implementation of CFG which can be used for the CodeGen family of models (CodeGen-350M-mono, CodeGen-2B-mono, CodeGen-6B-mono) starts the unconditional prompt $\log p_{\theta}(w_i | w_{j < i})$ with the last token of the initial prompt.
+- [1] Code has been implemented such that the CodeGen model family can be evaluated on HumanEval with guidance strengths [1.0, 1.1, 1.25, 1.5, 1.75, 2.0] as outlined in Footnote 3
+- [1] Code has been implemented such that the CodeGen model family can be evaluated on HumanEval with a sampling temperatures of [0.2, 0.6, 0.8] as outlined in Figure 3.
+- [1] Code has been implemented such that the CodeGen model family performance on HumanEval can be measured with pass@k, for k = 1, 10, 100 as outlined in Section 3.3.1 and in Footnote 4.
+- [1] Code for measuring the number of wins, ties and losses across HumanEval Samples between CFG (\gamma=1.25) and no CFG (\gamma=1) has been implemented for CodeGen-350M-mono for temperatures 0.2, 0.6, 0.8 has been implemented. A win is when CFG answers a sample correctly while no CFG does not, a loss is the reciprocal case, and a tie is when CFG and no CFG both get the sample correct or both get the sample incorrect.
+- [1] Code has been implemented for determining the inference FLOP count for each of the models successfully evaluated in 3.1 as outlined in https://github.com/google-research/electra/blob/master/flops_computation.py (and in the addendum), with and without CFG.
+- [1] Code has been implemented for pairing the inference FLOP with the model's evaluation's performance results from 3.1.
+- [2] Code has been implemented such that an ANCOVA regression analysis on paired FLOP-performance data from two given models can be run, such that it can be determined whether the FLOP/performance relationship is statistically different between the two models. As per Appendix C.2 and section 4.
+- [1] Code has been implemented such that around 32k samples from the P3 dataset (https://huggingface.co/datasets/bigscience/P3) can be used, obtaining the dataset from its official source or equivalent mirrors. As outlined in Section 5 and the addendum.
+- [1] Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Falcon-7b-Base model
+- [1] The implementation of CFG which can be used for the Falcon-7b-Base model of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength
+- [1] As outlined in Section 3.1, the implementation of CFG which can be used for the Falcon-7b-Base model starts the unconditional prompt $\log p_{\theta}(w_i | w_{j < i})$ with the last token of the initial prompt
+- [1] Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Falcon-7b-Instruct model
+- [1] The implementation of CFG which can be used for the Falcon-7b-Instruct model of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength
+- [1] As outlined in Section 3.1, the implementation of CFG which can be used for the Falcon-7b-Instruct model starts the unconditional prompt $\log p_{\theta}(w_i | w_{j < i})$ with the last token of the initial prompt
+- [1] Code for measuring the average logit entropy has been implemented, where entropy is defined $H(p) = -\sum_k p_k \log p_k$, equivalent to the scipy implementation as outlined in the Addendum.
+- [1] Code has been implemented for measuring the top-p overlap for some p, where two top-p vocab distributions are input and their inner product is taken to calculate the overlap, as shown in Figure 18b.
+- [1] Code has been implemented for measuring the perplexity of completion tokens compatible with the CFG and instruction-tuned models.
+- [1] Code has been implemented for measuring the spearman correlation between two sets of measured perplexities.
+- [1] Code to calculate the differences in token log probabilities across the entire vocabulary with CFG at each generation step has been developed as described in Section 5.3, i.e. $P(w_t \mid w_{<t}) - \log P(w_T \mid \hat{w})$
+- [1] Code has been implemented such that the toxicity dataset (https://huggingface.co/datasets/thesofakillers/jigsaw-toxic-comment-classification-challenge) can be used, obtaining it from the huggingface repository specified in the addendum.
+- [1] Code has been implemented such that the pretrained classifier used for toxicity evaluation and guidance ('unitary/toxic-bert') can be used, as noted in footnote 10 and Section 6.
+- [1] FUDGE has been set up following Yang & Klein 2021 for GPT-2 to enable classifier guidance on the task of toxicity detection
+- [1] Code has been implemented such that the sentiment IMBD dataset (https://huggingface.co/datasets/stanfordnlp/imdb) can be used, obtaining it from its official source or equivalent mirrors
+- [1] Code has been implemented such that the pretrained classifier used for sentiment guidance ('bhadresh-savani/distilbert-base-uncased-emotion') can be used, as noted in footnote 10 and Section 6.
+- [1] Code has been implemented such that the pretrained classifier used for sentiment evaluation ('stevhliu/my_awesome_model') can be used, as noted in footnote 10 and Section 6.
+- [1] FUDGE has been set up following Yang & Klein 2021 for GPT-2 to enable classifier guidance on the task of sentiment detection

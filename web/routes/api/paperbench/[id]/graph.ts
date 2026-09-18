@@ -1,13 +1,11 @@
 import { cast, lastStep, posts, topic, usage } from "@/lib/facts.ts";
 import { buildGraph } from "@/lib/influence.ts";
 import { paperPaths } from "@/lib/paths.ts";
-import { read } from "@/lib/paperbench.ts";
+import { live, read } from "@/lib/paperbench.ts";
 import { define } from "@/utils.ts";
 
-/** The PaperBench twin of `/api/runs/[id]/graph.ts`: same store, same spec file, same
- * `buildGraph`, because `benchmarks/paperbench/run.py`'s swarm stage writes both in the
- * same shape `benchmarks/swarm/run.py` does — including the usage sidecar, written live
- * by `run.py`'s own `Tape` plugin, the same shape `benchmarks/swarm/run.py`'s does. */
+/** The PaperBench twin of `/api/runs/[id]/graph.ts`, plus the run record itself, its
+ * progress and the live board, so one poll feeds the whole page. */
 export const handler = define.handlers({
   GET(ctx) {
     const run = read(ctx.params.id);
@@ -36,6 +34,9 @@ export const handler = define.handlers({
         error: run.error,
         usage: usage(paths.usage),
         posts: all.filter((p) => p.step <= step).slice(-60),
+        run,
+        progress: run.progress ?? null,
+        live: live(run.id),
       }),
       {
         headers: {
