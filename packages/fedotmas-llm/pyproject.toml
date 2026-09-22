@@ -20,7 +20,7 @@ dependencies = [
   "fedotmas",
 ]
 optional-dependencies.pydantic-ai = [
-  "pydantic-ai-slim[openai,openrouter]>=1.106",
+  "pydantic-ai-slim[mcp,openai,openrouter]>=1.106",
 ]
 optional-dependencies.serve = [
   "dishka>=1.10.1",

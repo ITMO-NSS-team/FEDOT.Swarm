@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, Tool
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models import Model, infer_model
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from fedotmas_llm._llm import Call, Usage
 from fedotmas_llm._tools import FunctionTool, MCPTool
@@ -38,6 +38,9 @@ class PydanticAI:
         self._settings = settings
         self._model_obj: Model | None = None
         self._usage = RunUsage()
+        # the shared meter is also what pydantic-ai checks its limits against, so its
+        # default request_limit=50 would cap the whole backend, not one call
+        self._limits = UsageLimits(request_limit=None)
 
     @property
     def usage(self) -> Usage:
@@ -57,5 +60,7 @@ class PydanticAI:
             toolsets=servers,
             **self._settings,
         )
-        result = await agent.run(_as_text(call.input), usage=self._usage)
+        result = await agent.run(
+            _as_text(call.input), usage=self._usage, usage_limits=self._limits
+        )
         return result.output
