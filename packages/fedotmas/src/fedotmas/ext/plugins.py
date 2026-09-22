@@ -52,3 +52,23 @@ class Timeout(Plugin):
         self, node: Node, input: list[Fact], view: View, call: NodeCall
     ) -> Result:
         return await asyncio.wait_for(call(input, view), self.seconds)
+
+
+class ConcurrencyLimit(Plugin):
+    """Cap how many node calls run at once, independent of how many a Policy armed this
+    superstep — a superstep still gathers all armed nodes at once, so a swarm with hundreds
+    of armed agents would otherwise fire hundreds of concurrent LLM requests. One semaphore
+    for the whole run (across nested runs too, since the interceptor onion stays at the level
+    a plugin was attached), the same role `asyncio.Semaphore` plays around OASIS's per-agent
+    LLM call."""
+
+    def __init__(self, n: int) -> None:
+        if n < 1:
+            raise ValueError(f"ConcurrencyLimit needs n >= 1, got {n}")
+        self._sem = asyncio.Semaphore(n)
+
+    async def around_node(
+        self, node: Node, input: list[Fact], view: View, call: NodeCall
+    ) -> Result:
+        async with self._sem:
+            return await call(input, view)

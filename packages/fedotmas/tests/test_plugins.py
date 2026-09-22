@@ -1,6 +1,8 @@
 """Plugin hooks: bind validation, step accounting, observers-vs-interceptors across nested
 runs, and the run-end symmetry between .run and .stream."""
 
+import asyncio
+
 import pytest
 from fedotmas import Plugin, Rule, action, blackboard, nest
 from fedotmas.engine import (
@@ -14,7 +16,7 @@ from fedotmas.engine import (
     as_node,
     register_event,
 )
-from fedotmas.ext.plugins import Retry
+from fedotmas.ext.plugins import ConcurrencyLimit, Retry
 
 
 async def double(x):
@@ -198,6 +200,51 @@ async def test_retry_attempts_do_not_multiply_through_nest():
 def test_retry_needs_at_least_one_attempt():
     with pytest.raises(ValueError, match="times >= 1"):
         Retry(0)
+
+
+async def test_concurrency_limit_bounds_how_many_calls_run_at_once():
+    current = {"n": 0, "peak": 0}
+
+    async def slow(x, view):
+        current["n"] += 1
+        current["peak"] = max(current["peak"], current["n"])
+        await asyncio.sleep(0.01)
+        current["n"] -= 1
+        return Result(writes=[])
+
+    nodes = [as_node(slow, name=f"n{i}", reads="in") for i in range(10)]
+    system = System(nodes)
+    await ReactiveExecutor().run(
+        system, Store(), seed=[Fact(tag="in", value=1)], plugins=[ConcurrencyLimit(3)]
+    )
+    assert current["peak"] <= 3
+
+
+async def test_concurrency_limit_of_one_serializes_calls():
+    order = []
+
+    def make_record(i):
+        async def record(input, view):
+            order.append(("start", i))
+            await asyncio.sleep(0.01)
+            order.append(("end", i))
+            return Result(writes=[])
+
+        return record
+
+    nodes = [as_node(make_record(i), name=f"n{i}", reads="in") for i in range(3)]
+    system = System(nodes)
+    await ReactiveExecutor().run(
+        system, Store(), seed=[Fact(tag="in", value=1)], plugins=[ConcurrencyLimit(1)]
+    )
+    # a limit of 1 never lets a second call start before the first ends
+    starts_and_ends = [kind for kind, _ in order]
+    assert starts_and_ends == ["start", "end"] * 3
+
+
+def test_concurrency_limit_needs_at_least_one_slot():
+    with pytest.raises(ValueError, match="n >= 1"):
+        ConcurrencyLimit(0)
 
 
 async def test_retry_on_narrows_what_is_retried():

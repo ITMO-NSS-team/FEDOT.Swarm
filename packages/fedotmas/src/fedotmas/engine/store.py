@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from fedotmas.engine.contract import Fact, View
 
@@ -66,6 +66,17 @@ class Snapshot:
             )
         positions = self._index.get(pattern, [])
         return bisect_left(positions, self._upto)
+
+
+@runtime_checkable
+class StoreBackend(Protocol):
+    """What the executor needs from a store: commit facts, read the clock, take a snapshot.
+    `Store` is the default in-memory backend; a durable one (e.g. `SqliteStore`) satisfies the
+    same three methods and drops into `System.run(..., store=...)` unchanged."""
+
+    def commit(self, facts: Iterable[Fact]) -> None: ...
+    def next_step(self) -> int: ...
+    def snapshot(self) -> View: ...
 
 
 class Store:

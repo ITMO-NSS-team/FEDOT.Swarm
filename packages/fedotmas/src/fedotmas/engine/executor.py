@@ -18,7 +18,7 @@ from fedotmas.engine.outcome import RunError
 from fedotmas.engine.plugin import Plugin, PluginDispatcher
 from fedotmas.engine.policy import FireAll
 from fedotmas.engine.report import Run, StepReport
-from fedotmas.engine.store import Store
+from fedotmas.engine.store import StoreBackend
 from fedotmas.engine.system import System
 from fedotmas.engine.terminate import Terminate
 
@@ -96,7 +96,7 @@ class ReactiveExecutor:
     async def stream(
         self,
         system: System,
-        store: Store,
+        store: StoreBackend,
         *,
         seed: Iterable[Fact] = (),
         terminate: Sequence[Terminate] = (),
@@ -116,7 +116,7 @@ class ReactiveExecutor:
     async def run(
         self,
         system: System,
-        store: Store,
+        store: StoreBackend,
         *,
         seed: Iterable[Fact] = (),
         terminate: Sequence[Terminate] = (),
@@ -136,7 +136,7 @@ class ReactiveExecutor:
     async def _steps(
         self,
         system: System,
-        store: Store,
+        store: StoreBackend,
         seed: Iterable[Fact],
         terminate: Sequence[Terminate],
         dispatcher: PluginDispatcher,
@@ -200,7 +200,7 @@ class ReactiveExecutor:
     def _finish(
         self,
         steps: list[StepReport],
-        store: Store,
+        store: StoreBackend,
         scope: tuple[str, ...],
         halt: bool,
         terminate: Sequence[Terminate],

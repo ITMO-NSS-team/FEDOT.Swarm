@@ -10,13 +10,15 @@ from fedotmas.engine.plugin import (
     PluginWarning,
     register_event,
 )
-from fedotmas.engine.policy import AuctionSelect, FireAll, Policy
+from fedotmas.engine.policy import ActivitySample, AuctionSelect, FireAll, Policy
 from fedotmas.engine.report import Run, StepReport
-from fedotmas.engine.store import Store
+from fedotmas.engine.sqlite_store import SqliteStore
+from fedotmas.engine.store import Store, StoreBackend
 from fedotmas.engine.system import Compilable, System
 from fedotmas.engine.terminate import Budget, Goal, Terminate
 
 __all__ = [
+    "ActivitySample",
     "AuctionSelect",
     "Budget",
     "Card",
@@ -36,9 +38,11 @@ __all__ = [
     "Result",
     "Run",
     "RunError",
+    "SqliteStore",
     "Status",
     "StepReport",
     "Store",
+    "StoreBackend",
     "System",
     "Terminate",
     "View",
