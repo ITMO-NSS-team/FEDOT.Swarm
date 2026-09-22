@@ -22,8 +22,8 @@ uv add --group dev <pkg>     # dev tooling
 ```bash
 uv run ruff check <paths>             # lint
 uv run ruff format <paths>            # format (add --check to verify only)
-uv run ty check packages/fedotmas     # types
-uv run pytest packages/fedotmas packages/fedotmas-llm -q
+uv run ty check packages/                                     # types
+uv run pytest packages/fedotmas packages/fedotmas-llm packages/fedotmas-meta -q
 ```
 
 Trust ruff, ty, and pytest, not the editor's Pyright.
