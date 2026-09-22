@@ -1,0 +1,12 @@
+{
+  "name": "fedotmas-web-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "walk": "node walk.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63"
+  }
+}

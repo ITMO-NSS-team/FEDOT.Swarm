@@ -23,11 +23,27 @@ examples = [
   "pydantic-ai-slim[openai]>=1.106",
   "python-dotenv>=1.2.2",
 ]
+paperbench = [
+  "httpx>=0.27",
+  # benchmarks/paperbench/run.py's own extra, only needed for --paper-pdf/parse_pdf.py
+  "pymupdf>=1.24",
+  "python-dotenv>=1.2.2",
+]
 
 [tool.uv]
 workspace.members = [ "packages/*" ]
 
+[tool.ruff]
+# the markdown code blocks in READMEs and fetched papers are prose, not code to format
+extend-exclude = [ "*.md" ]
+
 [tool.pytest]
-ini_options.testpaths = [ "packages/fedotmas/tests", "packages/fedotmas-llm/tests", "packages/fedotmas-meta/tests" ]
+ini_options.testpaths = [
+  "packages/fedotmas/tests",
+  "packages/fedotmas-llm/tests",
+  "packages/fedotmas-meta/tests",
+  "benchmarks/paperbench/tests",
+]
+ini_options.pythonpath = [ "benchmarks/paperbench" ]
 ini_options.asyncio_mode = "auto"
 ini_options.asyncio_default_fixture_loop_scope = "function"

@@ -51,6 +51,7 @@ plugins:
 
 nav:
   - Home: index.md
+  - PaperBench demo: paperbench.md
   - Core:
     - Concepts: core/concepts.md
     - Engine: core/engine.md

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from fedotmas.engine.plugin import Plugin, PluginDispatcher
     from fedotmas.engine.policy import Policy
     from fedotmas.engine.report import StepReport
+    from fedotmas.engine.store import StoreBackend
 
 
 @dataclass
@@ -65,19 +66,25 @@ class System:
         goal: str = "out",
         budget: int | None = 100,
         plugins: Sequence[Plugin] | PluginDispatcher = (),
+        store: StoreBackend | None = None,
     ) -> Outcome:
         """Execute on a fresh store and read the goal fact back as an Outcome. `seed` is a
         tag -> value map written as the initial facts; `goal` is the tag read back; `budget`
         caps the supersteps (the default 100 is a runaway guard, None lifts it). The
         selection policy and the error discipline are the system's own fields, not run
-        arguments."""
+        arguments. `store` swaps the backend (e.g. a durable `SqliteStore`); default is a
+        fresh in-memory `Store`."""
         from fedotmas.engine.store import Store
 
         executor, facts, terminate, dispatcher = self._setup(
             seed, goal, budget, plugins
         )
         run = await executor.run(
-            self, Store(), seed=facts, terminate=terminate, plugins=dispatcher
+            self,
+            store or Store(),
+            seed=facts,
+            terminate=terminate,
+            plugins=dispatcher,
         )
         return Outcome(run, goal)
 
@@ -88,15 +95,21 @@ class System:
         goal: str = "out",
         budget: int | None = 100,
         plugins: Sequence[Plugin] | PluginDispatcher = (),
+        store: StoreBackend | None = None,
     ) -> AsyncIterator[StepReport]:
-        """The streaming form of .run: yields each StepReport as the run unfolds."""
+        """The streaming form of .run: yields each StepReport as the run unfolds. `store`
+        swaps the backend, as on .run."""
         from fedotmas.engine.store import Store
 
         executor, facts, terminate, dispatcher = self._setup(
             seed, goal, budget, plugins
         )
         async for report in executor.stream(
-            self, Store(), seed=facts, terminate=terminate, plugins=dispatcher
+            self,
+            store or Store(),
+            seed=facts,
+            terminate=terminate,
+            plugins=dispatcher,
         ):
             yield report
 

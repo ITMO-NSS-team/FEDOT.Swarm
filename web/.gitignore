@@ -1,0 +1,4 @@
+node_modules/
+_fresh/
+var/
+vite.config.ts.timestamp-*

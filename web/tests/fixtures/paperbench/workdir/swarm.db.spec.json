@@ -1,0 +1,17 @@
+{
+  "preset": "swarm",
+  "fill": {
+    "personas": {
+      "coder_0": {
+        "prompt": "You are implementer 0 of 2 working this problem independently.",
+        "model": null,
+        "tools": []
+      },
+      "coder_1": {
+        "prompt": "You are implementer 1 of 2 working this problem independently.",
+        "model": null,
+        "tools": []
+      }
+    }
+  }
+}

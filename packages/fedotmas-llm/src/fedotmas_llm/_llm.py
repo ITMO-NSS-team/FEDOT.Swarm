@@ -26,11 +26,24 @@ class Usage:
     output_tokens: int = 0
     requests: int = 0
 
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
     def __add__(self, other: Usage) -> Usage:
         return Usage(
             self.input_tokens + other.input_tokens,
             self.output_tokens + other.output_tokens,
             self.requests + other.requests,
+        )
+
+    def __sub__(self, other: Usage) -> Usage:
+        """The difference between two readings of the same meter, which is how a run's own
+        spending is read off a backend that was already used before it started."""
+        return Usage(
+            self.input_tokens - other.input_tokens,
+            self.output_tokens - other.output_tokens,
+            self.requests - other.requests,
         )
 
 

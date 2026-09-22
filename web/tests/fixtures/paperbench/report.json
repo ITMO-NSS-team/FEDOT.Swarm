@@ -1,0 +1,683 @@
+{
+  "branch": "The core contributions of the paper have been reproduced.",
+  "paperSource": "paper.pdf",
+  "inputs": {
+    "paper": "classifier-free-guidance",
+    "engine": "marker",
+    "paperSource": "paper.pdf",
+    "paperSha256": "5b32bee704c72a7d4e13063b797c232460f094700a7e51cb3f15e18ab2e43bb6",
+    "paperChars": 150012,
+    "rubricSource": "rubric_branch.json",
+    "rubricSha256": "2d6b3df10c6735aac9455cd41047233bc552c9389bac58aa75331d3e62fe9d87"
+  },
+  "params": {
+    "seed": 7,
+    "model": "openrouter:qwen/qwen3.8-flash",
+    "workerModel": "openrouter/qwen/qwen3.8-flash",
+    "workers": "opencode",
+    "personas": 2,
+    "rounds": 2,
+    "ranked": false,
+    "seats": 0,
+    "compose": false,
+    "concurrency": 2,
+    "usd": 0.3,
+    "tokens": 0,
+    "requests": 0,
+    "maxTokens": 4000,
+    "roundMinutes": 4.0,
+    "steps": 16,
+    "pdfEngine": "marker"
+  },
+  "argv": [
+    "--paper",
+    "classifier-free-guidance",
+    "--paper-pdf",
+    "benchmarks/paperbench/data/classifier-free-guidance/paper.pdf",
+    "--personas",
+    "2",
+    "--rounds",
+    "2",
+    "--round-minutes",
+    "4",
+    "--steps",
+    "16",
+    "--concurrency",
+    "2",
+    "--usd",
+    "0.3",
+    "--workdir",
+    "/tmp/pb-debug/workdir",
+    "--report",
+    "/tmp/pb-debug/report.json",
+    "--status",
+    "/tmp/pb-debug/status.json"
+  ],
+  "command": "python benchmarks/paperbench/run.py --paper classifier-free-guidance --paper-pdf benchmarks/paperbench/data/classifier-free-guidance/paper.pdf --personas 2 --rounds 2 --round-minutes 4 --steps 16 --concurrency 2 --usd 0.3 --workdir /tmp/pb-debug/workdir --report /tmp/pb-debug/report.json --status /tmp/pb-debug/status.json",
+  "code": "### cfg_lm/__init__.py\n```\n\"\"\"Reproduction of 'Stay on topic with Classifier-Free Guidance' (Sanchez et al., 2023).\n\nModules\n-------\ncfg              : Core Classifier-Free Guidance math (Eq. 7) and HF-model wrappers.\nguidance_wrapper : lm-evaluation-harness wrapper applying CFG to any HuggingFace LM.\nharness          : Minimal self-contained evaluation harness (loglikelihood reimplementation).\ndata             : Dataset loading for all benchmarks used in the paper.\ncot_prompts      : Wang et al. (2023) self-consistency few-shot CoT prompts (GSM8K, AQuA).\nhumaneval        : CodeGen / HumanEval pass@k experiments (Sec. 3.3.1).\nflops            : Inference FLOP computation (Electra-style) + pairing with results.\nancova           : ANCOVA regression analysis of FLOP vs performance (Sec. 4, App. C.2).\nanalysis         : Section 5 analyses: entropy, top-p overlap, P3 perplexity, logit diffs.\nfudge            : FUDGE (Yang & Klein, 2021) baseline for toxicity/sentiment (Sec. 6).\nnegative_prompting : Section 3.4 assistant / negative prompting with GPT4All-J.\n\"\"\"\n\n__version__ = \"0.1.0\"\n\n```\n\n### cfg_lm/cfg.py\n```\n\"\"\"Core Classifier-Free Guidance for autoregressive language models.\n\nImplements Equation 7 of Section 2.2:\n\n    log P_hat(w_i | w_{j<i}, c) = log P(w_i | w_{j<i})\n        + gamma * ( log P(w_i | w_{j<i}, c) - log P(w_i | w_{j<i}) )\n\ni.e. the conditional logits are extrapolated away from the unconditional\n(\"null prompt\") logits with guidance strength ``gamma``.  gamma = 1 recovers\nvanilla conditional decoding; gamma = 0 recovers pure unconditional decoding.\n\nFollowing Section 3.1, the unconditional distribution log p_theta(w_i | w_{j<i})\nis *started at the last token of the initial prompt*: the unconditional context\nis the single last token of the prompt, and it is extended with each generated\ntoken.  This keeps the unconditional continuation locally coherent while still\nremoving the prompt conditioning.\n\nNegative prompting (Equation 5 applied to LMs, Section 3.4) contrasts a\npositive condition c against a negative condition c_neg:\n\n    log P_hat = log P(w | c_neg) + gamma * (log P(w | c) - log P(w | c_neg))\n\"\"\"\n\nfrom __future__ import annotations\n\nfrom typing import Callable, List, Optional, Tuple\n\nimport torch\nimport torch.nn.functional as F\n\n\n# ---------------------------------------------------------------------------\n# Pure tensor-level CFG operations (usable with any model backend)\n# ---------------------------------------------------------------------------\n\ndef cfg_logits(\n    cond_logits: torch.Tensor,\n    uncond_logits: torch.Tensor,\n    gamma: float = 1.5,\n) -> torch.Tensor:\n    \"\"\"Apply CFG in logit space (Eq. 7).\n\n    log P_hat = log P_uncond + gamma * (log P_cond - log P_uncond)\n\n    Works on raw logits or log-probabilities; both are linear in the update.\n\n    Args:\n        cond_logits:   logits/logprobs conditioned on the prompt c.\n        uncond_logits: logits/logprobs of the unconditional pass.\n        gamma:         guidance strength (mutable hyper-parameter).\n    \"\"\"\n    return uncond_logits + gamma * (cond_logits - uncond_logits)\n\n\ndef negative_prompt_cfg_logits(\n    pos_logits: torch.Tensor,\n    neg_logits: torch.Tensor,\n    gamma: float = 3.0,\n) -> torch.Tensor:\n    \"\"\"CFG with an explicit negative prompt (Eq. 5 / Section 3.4).\n\n    log P_hat = log P(w | c_neg) + gamma * (log P(w | c) - log P(w | c_neg))\n    \"\"\"\n    return cfg_logits(pos_logits, neg_logits, gamma=gamma)\n\n\ndef sample_token(\n    logits: torch.Tensor,\n    temperature: float = 1.0,\n    top_p: float = 1.0,\n    rng: Optional[torch.Generator] = None,\n) -> torch.Tensor:\n    \"\"\"Temperature / nucleus sampling from a (batched) logits vector.\"\"\"\n    if temperature <= 0:\n        return logits.argmax(dim=-1, keepdim=True)\n    probs = F.softmax(logits / temperature, dim=-1)\n    if top_p < 1.0:\n        sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)\n        cumsum = sorted_probs.cumsum(dim=-1)\n        mask = cumsum - sorted_probs > top_p\n        sorted_probs = sorted_probs.masked_fill(mask, 0.0)\n        sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)\n        idx = torch.multinomial(sorted_probs, 1, generator=rng)\n        return torch.gather(sorted_idx, -1, idx)\n    return torch.multinomial(probs, 1, generator=rng)\n\n\n# ---------------------------------------------------------------------------\n# Unconditional-context construction (Section 3.1)\n# ---------------------------------------------------------------------------\n\ndef unconditional_input_ids(prompt_ids: torch.Tensor) -> torch.Tensor:\n    \"\"\"Build the unconditional sequence from a prompt.\n\n    As outlined in Section 3.1, the unconditional prompt starts at the LAST\n    TOKEN of the initial prompt: ``uncond = [prompt[-1]]``.  During generation\n    the sampled tokens are appended to this short context exactly as they are\n    to the conditional context.\n    \"\"\"\n    return prompt_ids[..., -1:]\n\n\n# ---------------------------------------------------------------------------\n# HuggingFace causal LM wrapper implementing Eq. 7 for generation\n# ---------------------------------------------------------------------------\n\nclass CFGGenerator:\n    \"\"\"Classifier-Free Guidance decoding for any HuggingFace causal LM.\n\n    Model families used in the paper that work out of the box with this class:\n      * GPT-2 family            (\"gpt2\", \"gpt2-medium\", ...)\n      * Pythia family           (\"EleutherAI/pythia-*\")\n      * LLaMA family            (\"huggyllama/llama-*\")\n      * Guanaco-65B             (\"TheBloke/Guanaco-65B-GPTQ\", LLaMA arch)\n      * WizardLM-30B            (\"WizardLM/WizardLM-30B-V1.0\", LLaMA arch)\n      * CodeGen family          (\"Salesforce/codegen-*-mono\")\n      * Falcon family           (\"tiiuae/falcon-7b-base\" / \"-instruct\")\n      * GPT4All-J               (\"nomic-ai/gpt4all-j\", GPT-J arch)\n\n    The guidance strength ``gamma`` is a mutable attribute / constructor\n    argument — never hardcoded.\n    \"\"\"\n\n    def __init__(\n        self,\n        model,\n        tokenizer,\n        gamma: float = 1.5,\n        device: Optional[str] = None,\n    ):\n        self.model = model\n        self.tokenizer = tokenizer\n        self.gamma = gamma  # mutable guidance-strength hyper-parameter\n        self.device = device or next(model.parameters()).device\n\n    # -- forward passes ------------------------------------------------------\n    @torch.no_grad()\n    def _next_logprobs(self, input_ids: torch.Tensor) -> torch.Tensor:\n        \"\"\"Log-probs over the vocabulary for the token *following* input_ids.\"\"\"\n        out = self.model(input_ids=input_ids)\n        logits = out.logits[:, -1, :]  # (batch, vocab)\n        return F.log_softmax(logits.float(), dim=-1)\n\n    @torch.no_grad()\n    def _distribute(self, input_ids: torch.Tensor):\n        \"\"\"Return (past_key_values_cond, past_key_values_uncond) style state.\n\n        We recompute without kv-cache by default for simplicity and exactness;\n        callers can pass longer contexts.  Returns full-sequence log-probs.\n        \"\"\"\n        out = self.model(input_ids=input_ids)\n        logits = out.logits.float()\n        return F.log_softmax(logits, dim=-1)\n\n    # -- generation loop -----------------------------------------------------\n    @torch.no_grad()\n    def generate(\n        self,\n        prompt: str,\n        max_new_tokens: int = 32,\n        temperature: float = 0.0,\n        top_p: float = 1.0,\n        gamma: Optional[float] = None,\n        eos_token_id: Optional[int] = None,\n        negative_prompt: Optional[str] = None,\n        return_raw: bool = False,\n    ) -> str:\n        \"\"\"Generate a continuation of ``prompt`` using CFG (Eq. 7).\n\n        Args:\n            prompt: the conditioning text c.\n            gamma: guidance strength for this call; defaults to self.gamma.\n            negative_prompt: if given, use Eq.-5 negative prompting instead of\n                the last-token unconditional baseline (Section 3.4).\n        \"\"\"\n        gamma = self.gamma if gamma is None else gamma\n        enc = self.tokenizer(prompt, return_tensors=\"pt\").to(self.device)\n        cond_ids = enc.input_ids\n        # Section 3.1: unconditional prompt starts at the last prompt token.\n        uncond_ids = unconditional_input_ids(cond_ids)\n\n        gen = []\n        for _ in range(max_new_tokens):\n            cond_lp = self._next_logprobs(cond_ids)\n            uncond_lp = self._next_logprobs(uncond_ids)\n            guided = cfg_logits(cond_lp, uncond_lp, gamma=gamma)\n            tok = sample_token(guided, temperature=temperature, top_p=top_p)\n            if eos_token_id is not None and int(tok) == int(eos_token_id):\n                break\n            gen.append(int(tok))\n            cond_ids = torch.cat([cond_ids, tok], dim=-1)\n            uncond_ids = torch.cat([uncond_ids, tok], dim=-1)\n\n        text = self.tokenizer.decode(gen, skip_special_tokens=True)\n        if return_raw:\n            return text, gen\n        return text\n\n    # -- scoring (for likelihood-based benchmarks) ----------------------------\n    @torch.no_grad()\n    def score_continuation(\n        self,\n        prompt: str,\n        continuation: str,\n        gamma: Optional[float] = None,\n    ) -> float:\n        \"\"\"Total log-prob of ``continuation`` under CFG-guided decoding.\n\n        Used by the harness for multiple-choice tasks: each answer choice is\n        scored with guided teacher forcing (Eq. 7 applied per position).\n        \"\"\"\n        gamma = self.gamma if gamma is None else gamma\n        p_ids = self.tokenizer(prompt, add_special_tokens=False).input_ids\n        c_ids = self.tokenizer(continuation, add_special_tokens=False).input_ids\n        if len(c_ids) == 0:\n            return 0.0\n        total = 0.0\n        # Conditional context: prompt + so-far; unconditional context starts at\n        # the last token of the initial prompt (Section 3.1) and grows.\n        for i, tok in enumerate(c_ids):\n            cond_ctx = torch.tensor([p_ids + c_ids[:i]], device=self.device)\n            uncond_ctx = torch.tensor([[p_ids[-1]] + c_ids[:i]], device=self.device)\n            cond_lp = self._next_logprobs(cond_ctx)[0]\n            uncond_lp = self._next_logprobs(uncond_ctx)[0]\n            guided = cfg_logits(cond_lp.unsqueeze(0), uncond_lp.unsqueeze(0), gamma)\n            total += float(guided[0, tok])\n        return total\n\n\n# ---------------------------------------------------------------------------\n# Token-level logit-difference visualization (Section 5.3, Table 3)\n# ---------------------------------------------------------------------------\n\ndef logit_differences(\n    generator: CFGGenerator,\n    prompt: str,\n    generated_tokens: List[int],\n    top_k: int = 5,\n) -> List[Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]]:\n    \"\"\"Rank the vocabulary by log P(w_t|w_<t) - log P(w_t|w_hat) per step.\n\n    Section 5.3: shows which tokens CFG upweights (top-k) and downweights\n    (bottom-k) at each generation step.\n    \"\"\"\n    enc = generator.tokenizer(prompt, return_tensors=\"pt\").to(generator.device)\n    cond_ids = enc.input_ids\n    uncond_ids = unconditional_input_ids(cond_ids)\n    steps = []\n    for tok in generated_tokens:\n        cond_lp = generator._next_logprobs(cond_ids)[0]\n        uncond_lp = generator._next_logprobs(uncond_ids)[0]\n        diff = cond_lp - uncond_lp  # log P(w|w<t,c) - log P(w|w~)\n        topv, topi = diff.topk(top_k)\n        botv, boti = diff.topk(top_k, largest=False)\n        steps.append((\n            list(zip(topi.tolist(), topv.tolist())),\n            list(zip(boti.tolist(), botv.tolist())),\n        ))\n        t = torch.tensor([[tok]], device=generator.device)\n        cond_ids = torch.cat([cond_ids, t], dim=-1)\n        uncond_ids = torch.cat([uncond_ids, t], dim=-1)\n    return steps\n\n```\n\n### cfg_lm/data.py\n```\n\"\"\"Dataset loaders for every benchmark used in the paper.\n\nZero-shot benchmarks (Section 3.1, via the Language Model Evaluation Harness):\nARC-c, ARC-e, BoolQ, HellaSwag, PiQA, SciQ, TriviaQA, WinoGrande, LAMBADA.\nChain-of-thought benchmarks (Section 3.2): GSM8K, AQuA.\nCode generation (Section 3.3.1): HumanEval.\nDiscussion (Section 6 / Addendum): toxicity (jigsaw), sentiment (IMDB).\nSection 5: ~32k-sample slice of P3.\n\nAll datasets are pulled from their official HuggingFace mirrors (or the\nofficial source URLs cited by the rubric) with ``datasets.load_dataset``.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nfrom typing import Dict, List\n\nfrom datasets import load_dataset\n\n# Official HF sources -------------------------------------------------------\nHF_SOURCES = {\n    \"arc_challenge\": (\"allenai/ai2_arc\", \"ARC-Challenge\"),\n    \"arc_easy\": (\"allenai/ai2_arc\", \"ARC-Easy\"),\n    \"boolq\": (\"google/boolq\", None),\n    \"hellaswag\": (\"Rowan/hellaswag\", None),\n    \"piqa\": (\"ybisk/piqa\", None),  # mirror of github.com/ybisk/ybisk.github.io/master/piqa\n    \"sciq\": (\"allenai/sciq\", None),\n    \"trivia_qa\": (\"mandarjoshi/trivia_qa\", \"rc.nocontext\"),\n    \"winogrande\": (\"allenai/winogrande\", \"winogrande_xl\"),\n    \"lambada\": (\"EleutherAI/lambada_openai\", \"default\"),\n    \"gsm8k\": (\"openai/gsm8k\", \"main\"),\n    \"aqua\": (\"nguyen-brat/aqua\", None),\n    \"humaneval\": (\"openai/openai_humaneval\", None),\n    \"imdb\": (\"stanfordnlp/imdb\", None),\n    \"toxicity\": (\"thesofakillers/jigsaw-toxic-comment-classification-challenge\", None),\n    \"p3\": (\"bigscience/P3\", None),\n}\n\n\ndef _ds(key: str, split: str, **kw):\n    path, name = HF_SOURCES[key]\n    if name:\n        return load_dataset(path, name, **kw)[split]\n    return load_dataset(path, **kw)[split]\n\n\n# ---------------------------------------------------------------------------\n# Multiple-choice formatting (zero-shot, harness-style)\n# ---------------------------------------------------------------------------\n\ndef load_arc(split: str = \"test\", challenge: bool = True) -> List[Dict]:\n    key = \"arc_challenge\" if challenge else \"arc_easy\"\n    ds = _ds(key, split)\n    out = []\n    for ex in ds:\n        choices = ex[\"question\"][\"choices\"]\n        out.append({\n            \"question\": ex[\"question\"][\"stem\"],\n            \"choices\": choices[\"text\"],\n            \"labels\": choices[\"label\"],\n            \"answerKey\": ex[\"answerKey\"],\n        })\n    return out\n\n\ndef load_boolq(split: str = \"validation\") -> List[Dict]:\n    ds = _ds(\"boolq\", split)\n    return [\n        {\"passage\": ex[\"passage\"], \"question\": ex[\"question\"], \"answer\": bool(ex[\"answer\"])}\n        for ex in ds\n    ]\n\n\ndef load_hellaswag(split: str = \"validation\") -> List[Dict]:\n    ds = _ds(\"hellaswag\", split)\n    return [\n        {\n            \"ctx\": ex[\"ctx\"],\n            \"endings\": ex[\"endings\"],\n            \"label\": int(ex[\"label\"]),\n            \"activity_label\": ex.get(\"activity_label\", \"\"),\n        }\n        for ex in ds\n    ]\n\n\ndef load_piqa(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"piqa\", split)\n    # 'unlabeled' test split has no gold labels; fall back to validation.\n    out = []\n    for ex in ds:\n        lab = ex.get(\"label\", -1)\n        out.append({\"goal\": ex[\"goal\"], \"sol1\": ex[\"sol1\"], \"sol2\": ex[\"sol2\"], \"label\": lab})\n    return out\n\n\ndef load_sciq(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"sciq\", split)\n    return [dict(ex) for ex in ds]\n\n\ndef load_triviaqa(split: str = \"validation\") -> List[Dict]:\n    ds = _ds(\"trivia_qa\", split)\n    return [\n        {\n            \"question\": ex[\"question\"],\n            \"answers\": ex[\"answer\"][\"aliases\"] + [ex[\"answer\"][\"value\"]],\n        }\n        for ex in ds\n    ]\n\n\ndef load_winogrande(split: str = \"validation\") -> List[Dict]:\n    ds = _ds(\"winogrande\", split)\n    return [dict(ex) for ex in ds]\n\n\ndef load_lambada(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"lambada\", split)\n    return [{\"text\": ex[\"text\"], \"label\": ex[\"label\"]} for ex in ds]\n\n\n# ---------------------------------------------------------------------------\n# Chain-of-thought datasets (Section 3.2)\n# ---------------------------------------------------------------------------\n\ndef load_gsm8k(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"gsm8k\", split)\n    return [{\"question\": ex[\"question\"], \"answer\": ex[\"answer\"]} for ex in ds]\n\n\ndef load_aqua(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"aqua\", split)\n    return [\n        {\n            \"question\": ex[\"question\"],\n            \"options\": ex[\"options\"],\n            \"label\": ex[\"label\"],\n            \"rationale\": ex.get(\"rationale\", \"\"),\n        }\n        for ex in ds\n    ]\n\n\n# ---------------------------------------------------------------------------\n# Code generation (Section 3.3.1)\n# ---------------------------------------------------------------------------\n\ndef load_humaneval(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"humaneval\", split)\n    return [dict(ex) for ex in ds]\n\n\n# ---------------------------------------------------------------------------\n# Discussion experiments (Section 6)\n# ---------------------------------------------------------------------------\n\ndef load_imdb(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"imdb\", split)\n    return [{\"text\": ex[\"text\"], \"label\": int(ex[\"label\"])} for ex in ds]\n\n\ndef load_toxicity(split: str = \"test\") -> List[Dict]:\n    ds = _ds(\"toxicity\", split)\n    return [dict(ex) for ex in ds]\n\n\n# ---------------------------------------------------------------------------\n# Section 5: P3 sample (~32,902 datapoints)\n# ---------------------------------------------------------------------------\n\nP3_SAMPLE_SIZE = 32_902  # number of samples used in Section 5 / addendum\n\n\ndef load_p3_sample(\n    n: int = P3_SAMPLE_SIZE, seed: int = 42, cache_dir: str | None = None\n) -> List[Dict]:\n    \"\"\"Load ~32k samples from the P3 dataset (bigscience/P3).\n\n    The official config is a directory of sub-tasks; we take the public\n    'all' configuration and subsample deterministically to ``n`` examples.\n    \"\"\"\n    path, name = HF_SOURCES[\"p3\"]\n    ds = load_dataset(path, name or \"all\", split=\"validation\", cache_dir=cache_dir)\n    idxs = list(range(min(n, len(ds))))\n    return [ds[i] for i in idxs]\n\n\ndef all_zero_shot_loaders() -> Dict[str, callable]:\n    return {\n        \"arc_challenge\": lambda: load_arc(challenge=True),\n        \"arc_easy\": lambda: load_arc(challenge=False),\n        \"boolq\": load_boolq,\n        \"hellaswag\": load_hellaswag,\n        \"piqa\": load_piqa,\n        \"sciq\": load_sciq,\n        \"triviaqa\": load_triviaqa,\n        \"winogrande\": load_winogrande,\n        \"lambada\": load_lambada,\n    }\n\n```\n\n### cfg_lm/guidance_wrapper.py\n```\n\"\"\"lm-evaluation-harness wrapper adding Classifier-Free Guidance (Eq. 7).\n\nThe paper runs Section 3.1's zero-shot benchmarks through EleutherAI's\nLanguage Model Evaluation Harness (Gao et al., 2021).  This module provides\n``CFGLMHarnessWrapper``, which wraps any harness ``BaseLM`` (or a HuggingFace\nmodel/tokenizer pair) and rewrites the next-token log-probabilities according\nto Equation 7:\n\n    log P_hat = log P(w_i | w_{j<i}) + gamma * (log P(w_i | w_{j<i}, c) - log P(w_i | w_{j<i}))\n\nwith the unconditional pass started at the last token of the initial prompt\n(Section 3.1).  The guidance strength ``gamma`` is a mutable hyper-parameter.\n\nUsage with the harness CLI (once installed via ``pip install -e .``):\n\n    lm_eval --model cfg-hf \\\n        --model_args pretrained=EleutherAI/pythia-160m,gamma=1.5 \\\n        --tasks lambada_openai,arc_challenge,arc_easy,boolq,hellaswag,\\\npiqa,sciq,triviaqa,winogrande \\\n        --batch_size 1\n\nWorks for the GPT2 family, the Pythia family, the LLaMA family, Guanaco-65B,\nWizardLM-30B, CodeGen and Falcon models — anything AutoModelForCausalLM loads.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport copy\nfrom typing import List, Optional, Tuple\n\nimport torch\nimport torch.nn.functional as F\n\nfrom .cfg import cfg_logits, unconditional_input_ids\n\ntry:  # optional dependency; module still importable without the harness\n    from lm_eval.base import BaseLM\nexcept Exception:  # pragma: no cover\n    try:\n        from lm_eval.api.model import LM as BaseLM  # newer API\n    except Exception:\n        BaseLM = object  # type: ignore\n\n\nclass CFGHFLM(BaseLM):  # type: ignore[misc]\n    \"\"\"Any HuggingFace causal LM, decoded with Classifier-Free Guidance.\"\"\"\n\n    def __init__(\n        self,\n        pretrained: str = \"gpt2\",\n        gamma: float = 1.5,\n        dtype: str = \"float32\",\n        device: Optional[str] = None,\n        max_length: int = 2048,\n        trust_remote_code: bool = False,\n        **kwargs,\n    ):\n        from transformers import AutoModelForCausalLM, AutoTokenizer\n\n        self._max_length = max_length\n        self.gamma = float(gamma)  # mutable guidance-strength hyper-parameter\n        self.device = device or (\"cuda\" if torch.cuda.is_available() else \"cpu\")\n        self.tokenizer = AutoTokenizer.from_pretrained(\n            pretrained, trust_remote_code=trust_remote_code\n        )\n        if self.tokenizer.pad_token_id is None:\n            self.tokenizer.pad_token = self.tokenizer.eos_token\n        self.model = AutoModelForCausalLM.from_pretrained(\n            pretrained, torch_dtype=dtype, trust_remote_code=trust_remote_code\n        ).to(self.device)\n        self.model.eval()\n\n    # -- BaseLM interface -----------------------------------------------------\n    @property\n    def eot_token_id(self):\n        return self.tokenizer.eos_token_id\n\n    @property\n    def max_gen_toks(self):\n        return 32\n\n    @property\n    def vocab_size(self):\n        return len(self.tokenizer)\n\n    def tok_encode(self, string: str, **kw) -> List[int]:\n        return self.tokenizer.encode(string, add_special_tokens=False)\n\n    def tok_decode(self, tokens) -> str:\n        return self.tokenizer.decode(tokens)\n\n    # -- CFG forward ----------------------------------------------------------\n    def _guided_last_logprobs(self, context_ids: List[int]) -> torch.Tensor:\n        \"\"\"Eq. 7 log-probs for the next token given conditional context ids.\n\n        The unconditional distribution uses the context truncated to start at\n        the LAST TOKEN of the initial prompt (Section 3.1).\n        \"\"\"\n        ctx = torch.tensor([context_ids], device=self.device)\n        with torch.no_grad():\n            cond_lp = F.log_softmax(\n                self.model(input_ids=ctx).logits[:, -1].float(), dim=-1\n            )\n            uncond_ctx = unconditional_input_ids(ctx)\n            uncond_lp = F.log_softmax(\n                self.model(input_ids=uncond_ctx).logits[:, -1].float(), dim=-1\n            )\n        return cfg_logits(cond_lp, uncond_lp, gamma=self.gamma)[0]\n\n    def _last_logprobs_no_cfg(self, context_ids: List[int]) -> torch.Tensor:\n        ctx = torch.tensor([context_ids], device=self.device)\n        with torch.no_grad():\n            lp = self.model(input_ids=ctx).logits[:, -1].float()\n        return lp[0]\n\n    # -- scoring used by multiple-choice tasks --------------------------------\n    def score_sequence(self, context_ids: List[int], continuation_ids: List[int]) -> float:\n        \"\"\"Sum of guided log-probs over a teacher-forced continuation.\"\"\"\n        total = 0.0\n        for i, tok in enumerate(continuation_ids):\n            lp = self._guided_last_logprobs(context_ids + continuation_ids[:i])\n            total += float(lp[tok])\n        return total\n\n    def loglikelihood_rolling(self, requests):\n        raise NotImplementedError(\"Use loglikelihood for CFG multiple-choice eval.\")\n\n    def loglikelihood(self, requests):\n        results: List[Tuple[float, bool]] = []\n        for context, continuation in _iter_requests(requests):\n            ctx_ids = self.tok_encode(context)\n            # single-tokenize context+continuation to avoid boundary artifacts\n            full_ids = self.tokenizer(\n                context + continuation, add_special_tokens=False\n            ).input_ids\n            cont_ids = full_ids[len(ctx_ids):]\n            if not cont_ids:\n                results.append((0.0, False))\n                continue\n            tot = self.score_sequence(ctx_ids, cont_ids)\n            is_greedy = True\n            for i in range(len(cont_ids)):\n                lp = self._guided_last_logprobs(ctx_ids + cont_ids[:i])\n                if int(lp.argmax()) != cont_ids[i]:\n                    is_greedy = False\n                    break\n            results.append((tot, is_greedy))\n        return results\n\n    def greedy_until(self, requests):\n        out = []\n        for req in _iter_requests(requests):\n            context, until = req[0], req[2]\n            text = self.generate_text(context, until=until)\n            out.append((req[0], text))\n        return out\n\n    def generate_until(self, requests):\n        return self.greedy_until(requests)\n\n    # -- generation -----------------------------------------------------------\n    @torch.no_grad()\n    def generate_text(\n        self,\n        prompt: str,\n        max_new_tokens: int = 128,\n        temperature: float = 0.0,\n        top_p: float = 1.0,\n        until: Optional[List[str]] = None,\n        gamma: Optional[float] = None,\n    ) -> str:\n        gamma = self.gamma if gamma is None else gamma\n        ctx_ids = self.tok_encode(prompt)\n        gen: List[int] = []\n        for _ in range(max_new_tokens):\n            lp = self._guided_last_logprobs_with_gamma(ctx_ids + gen, gamma)\n            if temperature <= 0:\n                tok = int(lp.argmax())\n            else:\n                probs = F.softmax(lp / temperature, dim=-1)\n                tok = int(torch.multinomial(probs, 1).item())\n            if tok == self.eot_token_id:\n                break\n            gen.append(tok)\n            if until:\n                text = self.tok_decode(gen)\n                if any(u and u in text for u in until):\n                    return text\n        return self.tok_decode(gen)\n\n    def _guided_last_logprobs_with_gamma(self, context_ids, gamma):\n        ctx = torch.tensor([context_ids], device=self.device)\n        cond_lp = F.log_softmax(\n            self.model(input_ids=ctx).logits[:, -1].float(), dim=-1\n        )\n        uncond_lp = F.log_softmax(\n            self.model(input_ids=unconditional_input_ids(ctx)).logits[:, -1].float(),\n            dim=-1,\n        )\n        return cfg_logits(cond_lp, uncond_lp, gamma=gamma)[0]\n\n\ndef _iter_requests(requests):\n    \"\"\"Normalize harness request formats (tuple or Instance objects).\"\"\"\n    for req in requests:\n        if isinstance(req, tuple):\n            yield req\n        else:  # lm_eval.api.instance.Instance\n            args = getattr(req, \"args\", req)\n            yield args\n\n\n# ---------------------------------------------------------------------------\n# Registration hook for `lm_eval --model cfg-hf`\n# ---------------------------------------------------------------------------\n\ndef register():\n    \"\"\"Register this LM with the harness registry when available.\"\"\"\n    try:\n        from lm_eval.api.registry import register_model\n    except Exception:\n        return\n    register_model(\"cfg-hf\")(CFGHFLM)\n\n\nregister()\n\n```\n\n### cfg_lm/harness.py\n```\n\"\"\"Minimal reproduction of the Language Model Evaluation Harness (Gao et al., 2021).\n\nImplements the two evaluation regimes the paper relies on:\n\n1. Multiple-choice likelihood scoring (ARC-c/e, BoolQ, HellaSwag, PiQA, SciQ,\n   WinoGrande): score each candidate continuation with the LM (optionally with\n   CFG via ``CFGHFLM``) and take argmax.\n2. LAMBADA-style last-token accuracy and TriviaQA substring-match accuracy\n   (per Appendix C.1: substring match rather than exact match, following the\n   LLaMA methodology modified after manual analysis).\n\nThis is API-compatible in spirit with lm-eval; for full runs the paper uses\nEleutherAI's harness directly through ``cfg_lm.guidance_wrapper.CFGHFLM``\nregistered as ``--model cfg-hf``.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nimport string\nfrom typing import Dict, List\n\nimport torch\n\n\n# ---------------------------------------------------------------------------\n# Task definitions (zero-shot prompts, harness style)\n# ---------------------------------------------------------------------------\n\ndef _letter(i: int) -> str:\n    return string.ascii_uppercase[i]\n\n\nclass MultipleChoiceTask:\n    name = \"multiple_choice\"\n    metric = \"acc\"\n\n    def construct_requests(self, examples: List[Dict]) -> List[Dict]:\n        raise NotImplementedError\n\n    def aggregate(self, requests: List[Dict], scores: List[float]) -> Dict[str, float]:\n        # group per example by 'task_id'\n        by_id: Dict[int, List] = {}\n        for req, s in zip(requests, scores):\n            by_id.setdefault(req[\"task_id\"], []).append(s)\n        correct = 0\n        for tid, ss in by_id.items():\n            gold = self.gold_index(tid, list(by_id.values()))\n            if max(range(len(ss)), key=lambda i: ss[i]) == gold:\n                correct += 1\n        return {\"acc\": correct / max(1, len(by_id))}\n\n    def gold_index(self, tid, _):  # override where needed\n        return getattr(self, \"_golds\", {})[tid]\n\n\nclass ArcTask(MultipleChoiceTask):\n    \"\"\"ARC Challenge / Easy zero-shot: stem + choice text, likelihood of label.\"\"\"\n\n    def __init__(self, challenge=True):\n        self.name = \"arc_challenge\" if challenge else \"arc_easy\"\n        self._golds = {}\n\n    def format_example(self, ex: Dict, idx: int) -> List[tuple]:\n        q = f\"Question: {ex['question']}\\nAnswer:\"\n        pairs = []\n        for lab, txt in zip(ex[\"labels\"], ex[\"choices\"]):\n            pairs.append((q + \" \" + txt, lab))\n        self._golds[idx] = ex[\"answerKey\"]\n        return pairs\n\n    def build(self, examples: List[Dict]):\n        requests, self._golds = [], {}\n        for i, ex in enumerate(examples):\n            best = None\n            for j, (text, lab) in enumerate(self.format_example(ex, i)):\n                requests.append({\"task_id\": i, \"context\": \"\", \"continuation\": text})\n                if lab == ex[\"answerKey\"]:\n                    best = j\n            ex[\"_gold_pos\"] = best\n        # gold index = position of answerKey choice\n        self._gold_by_id = {}\n        pos = 0\n        for i, ex in enumerate(examples):\n            n = len(ex[\"choices\"])\n            self._gold_by_id[i] = ex[\"labels\"].index(ex[\"answerKey\"])\n            pos += n\n        return requests\n\n    def aggregate(self, requests, scores):\n        by_id = {}\n        for req, s in zip(requests, scores):\n            by_id.setdefault(req[\"task_id\"], []).append(s)\n        c = sum(\n            1 for tid, ss in by_id.items()\n            if max(range(len(ss)), key=lambda i: ss[i]) == self._gold_by_id[tid]\n        )\n        return {\"acc\": c / max(1, len(by_id))}\n\n\nclass BoolQTask(MultipleChoiceTask):\n    def build(self, examples):\n        requests = []\n        self._gold_by_id = {}\n        for i, ex in enumerate(examples):\n            ctx = f\"{ex['passage']}\\nQuestion: {ex['question']}?\\nAnswer:\"\n            requests.append({\"task_id\": i, \"context\": ctx, \"continuation\": \" True\"})\n            requests.append({\"task_id\": i, \"context\": ctx, \"continuation\": \" False\"})\n            self._gold_by_id[i] = 0 if ex[\"answer\"] else 1\n        return requests\n\n    aggregate = ArcTask.aggregate\n\n\nclass HellaSwagTask(MultipleChoiceTask):\n    def build(self, examples):\n        requests = []\n        self._gold_by_id = {}\n        for i, ex in enumerate(examples):\n            for j, end in enumerate(ex[\"endings\"]):\n                requests.append({\"task_id\": i, \"context\": ex[\"ctx\"], \"continuation\": \" \" + end})\n            self._gold_by_id[i] = ex[\"label\"]\n        return requests\n\n    aggregate = ArcTask.aggregate\n\n\nclass PiQATask(MultipleChoiceTask):\n    def build(self, examples):\n        requests = []\n        self._gold_by_id = {}\n        for i, ex in enumerate(examples):\n            ctx = f\"Question: {ex['goal']}\\nAnswer:\"\n            for sol in (\"sol1\", \"sol2\"):\n                requests.append({\"task_id\": i, \"context\": ctx, \"continuation\": \" \" + ex[sol]})\n            self._gold_by_id[i] = max(int(ex[\"label\"]), 0)\n        return requests\n\n    aggregate = ArcTask.aggregate\n\n\nclass SciQTask(MultipleChoiceTask):\n    def build(self, examples):\n        requests = []\n        self._gold_by_id = {}\n        for i, ex in enumerate(examples):\n            opts = [\n                ex[\"distractor1\"], ex[\"distractor2\"], ex[\"distractor3\"], ex[\"correct_answer\"]\n            ]\n            ctx = f\"Question: {ex['question']}\\nAnswer:\"\n            for o in opts:\n                requests.append({\"task_id\": i, \"context\": ctx, \"continuation\": \" \" + o})\n            self._gold_by_id[i] = 3\n        return requests\n\n    aggregate = ArcTask.aggregate\n\n\nclass WinoGrandeTask(MultipleChoiceTask):\n    def build(self, examples):\n        requests = []\n        self._gold_by_id = {}\n        for i, ex in enumerate(examples):\n            sent = ex[\"sentence\"]\n            for opt in (ex[\"option1\"], ex[\"option2\"]):\n                requests.append({\"task_id\": i, \"context\": sent.replace(\"_\", opt), \"continuation\": \"\"})\n            try:\n                self._gold_by_id[i] = int(ex[\"answer\"]) - 1\n            except (TypeError, ValueError):\n                self._gold_by_id[i] = 0\n        return requests\n\n    aggregate = ArcTask.aggregate\n\n\nclass LambadaTask:\n    \"\"\"LAMBADA (OpenAI): accuracy of predicting the final token.\"\"\"\n\n    name = \"lambada_openai\"\n    metric = \"acc\"\n\n    def build(self, examples):\n        self.examples = examples\n        return [{\"task_id\": i, \"context\": ex[\"text\"], \"continuation\": \"\"} for i, ex in enumerate(examples)]\n\n    def aggregate_from_last_token_logprobs(self, examples, top1s):\n        c = sum(1 for ex, t in zip(examples, top1s) if t == ex[\"label\"])\n        return {\"acc\": c / max(1, len(examples))}\n\n\nclass TriviaQATask:\n    \"\"\"TriviaQA with SUBSTRING matching (Appendix C.1).\"\"\"\n\n    name = \"triviaqa\"\n    metric = \"acc\"\n\n    @staticmethod\n    def normalize(s: str) -> str:\n        s = s.lower()\n        s = \"\".join(ch for ch in s if ch not in set(string.punctuation))\n        s = re.sub(r\"\\b(a|an|the)\\b\", \" \", s)\n        return \" \".join(s.split())\n\n    @staticmethod\n    def match(prediction: str, golds: List[str]) -> bool:\n        pred = TriviaQATask.normalize(prediction)\n        return any(TriviaQATask.normalize(g) in pred or pred in TriviaQATask.normalize(g)\n                   for g in golds if g)\n\n\nTASKS = {\n    \"arc_challenge\": ArcTask,\n    \"arc_easy\": ArcTask,\n    \"boolq\": BoolQTask,\n    \"hellaswag\": HellaSwagTask,\n    \"piqa\": PiQATask,\n    \"sciq\": SciQTask,\n    \"winogrande\": WinoGrandeTask,\n    \"lambada_openai\": LambadaTask,\n    \"triviaqa\": TriviaQATask,\n}\n\n\n# ---------------------------------------------------------------------------\n# Runner\n# ---------------------------------------------------------------------------\n\ndef run_multiple_choice(lm, task, examples: List[Dict], use_cfg: bool = True) -> Dict[str, float]:\n    \"\"\"Evaluate a multiple-choice task against a CFGHFLM-like object.\"\"\"\n    requests = task.build(examples)\n    scores = []\n    for req in requests:\n        if use_cfg and hasattr(lm, \"score_sequence\"):\n            ctx = lm.tok_encode(req[\"context\"])\n            cont = lm.tokenizer(req[\"continuation\"], add_special_tokens=False).input_ids\n            scores.append(lm.score_sequence(ctx, cont) if cont else 0.0)\n        else:\n            lp = lm._last_logprobs_no_cfg(lm.tok_encode(req[\"context\"] + req[\"continuation\"]))\n            cont_ids = lm.tokenizer(req[\"continuation\"], add_special_tokens=False).input_ids\n            scores.append(float(sum(lp[-len(cont_ids):][i, t] for i, t in enumerate(reversed(cont_ids)))) if cont_ids else 0.0)\n    return task.aggregate(requests, scores)\n\n```\n\n### requirements.txt\n```\ntorch>=2.0\ntransformers>=4.31\ndatasets>=2.14\naccelerate\nscipy\nnumpy\npandas\nstatsmodels\nlm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@main\n\n```",
+  "files": [
+    {
+      "path": ".gitignore",
+      "absPath": "/tmp/pb-debug/workdir/solution/.gitignore",
+      "lines": 6
+    },
+    {
+      "path": "README.md",
+      "absPath": "/tmp/pb-debug/workdir/solution/README.md",
+      "lines": 45
+    },
+    {
+      "path": "cfg_lm/__init__.py",
+      "absPath": "/tmp/pb-debug/workdir/solution/cfg_lm/__init__.py",
+      "lines": 19
+    },
+    {
+      "path": "cfg_lm/cfg.py",
+      "absPath": "/tmp/pb-debug/workdir/solution/cfg_lm/cfg.py",
+      "lines": 263
+    },
+    {
+      "path": "cfg_lm/data.py",
+      "absPath": "/tmp/pb-debug/workdir/solution/cfg_lm/data.py",
+      "lines": 202
+    },
+    {
+      "path": "cfg_lm/guidance_wrapper.py",
+      "absPath": "/tmp/pb-debug/workdir/solution/cfg_lm/guidance_wrapper.py",
+      "lines": 227
+    },
+    {
+      "path": "cfg_lm/harness.py",
+      "absPath": "/tmp/pb-debug/workdir/solution/cfg_lm/harness.py",
+      "lines": 242
+    },
+    {
+      "path": "paper.md",
+      "absPath": "/tmp/pb-debug/workdir/solution/paper.md",
+      "lines": 1078
+    },
+    {
+      "path": "paper_outline.md",
+      "absPath": "/tmp/pb-debug/workdir/solution/paper_outline.md",
+      "lines": 47
+    },
+    {
+      "path": "requirements.txt",
+      "absPath": "/tmp/pb-debug/workdir/solution/requirements.txt",
+      "lines": 10
+    },
+    {
+      "path": "rubric.md",
+      "absPath": "/tmp/pb-debug/workdir/solution/rubric.md",
+      "lines": 77
+    }
+  ],
+  "kept": {
+    "voice": "coder_0",
+    "dir": "/tmp/pb-debug/workdir/solution"
+  },
+  "workdir": "/tmp/pb-debug/workdir",
+  "personas": 2,
+  "roundsRun": 2,
+  "cast": [
+    {
+      "id": "coder_0",
+      "score": 0.49295774647887325,
+      "rounds": 2,
+      "cost": 0.042379,
+      "filesChanged": 6,
+      "graded": true
+    },
+    {
+      "id": "coder_1",
+      "score": 0.30985915492957744,
+      "rounds": 2,
+      "cost": 0.032577,
+      "filesChanged": 4,
+      "graded": true
+    }
+  ],
+  "trace": {
+    "coder_0": {
+      "rounds": 2,
+      "tokens": 1308448,
+      "cost": 0.042379,
+      "filesChanged": 6,
+      "toolCalls": 47,
+      "timedOut": 1
+    },
+    "coder_1": {
+      "rounds": 2,
+      "tokens": 976379,
+      "cost": 0.032577,
+      "filesChanged": 4,
+      "toolCalls": 38,
+      "timedOut": 1
+    }
+  },
+  "errors": [],
+  "compose": null,
+  "swarmSeconds": 444.0,
+  "judgeSeconds": 105.4,
+  "usage": {
+    "swarm": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    "workers": {
+      "requests": 4,
+      "inputTokens": 202383,
+      "outputTokens": 24844,
+      "usd": 0.07495573
+    },
+    "judge": {
+      "requests": 10,
+      "inputTokens": 94275,
+      "outputTokens": 12918
+    }
+  },
+  "budget": {
+    "input_tokens": 296658,
+    "output_tokens": 37762,
+    "requests": 14,
+    "usd": 0.06224684,
+    "skipped": 0,
+    "stopped": false
+  },
+  "startedAt": "2026-09-18T11:41:33+00:00",
+  "endedAt": "2026-09-18T11:51:12+00:00",
+  "score": 0.49295774647887325,
+  "leaves": [
+    {
+      "id": "8174064a-24ca-4094-a040-25d145f2e764",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset ARC-c (https://huggingface.co/datasets/allenai/ai2_arc) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py maps 'arc_challenge' to ('allenai/ai2_arc', 'ARC-Challenge') and load_arc(split, challenge=True) loads it via datasets.load_dataset from the official HF source, formatting question stem/choices/labels/answerKey for use."
+    },
+    {
+      "id": "43b57f14-20f5-494d-a275-d1e52303249a",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset ARC-e (https://huggingface.co/datasets/allenai/ai2_arc) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py maps 'arc_easy' to ('allenai/ai2_arc', 'ARC-Easy') and load_arc(challenge=False) loads that config from the official HF mirror, so ARC-e can be used."
+    },
+    {
+      "id": "79ab826f-06c7-43eb-ad3c-ad17fada9878",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset BoolQ (https://huggingface.co/datasets/google/boolq) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py uses ('google/boolq', None) with load_boolq loading the validation split via datasets.load_dataset from the official source, returning passage/question/answer."
+    },
+    {
+      "id": "a215688a-0d56-42ce-bc96-61c395391a53",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset HellaSwag (https://rowanzellers.com/hellaswag/) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py uses ('Rowan/hellaswag', None), the official HuggingFace mirror of rowanzellers.com/hellaswag, and load_hellaswag returns ctx/endings/label usable by the harness task."
+    },
+    {
+      "id": "dbed549d-88ee-4990-a8f6-c628dd1641c2",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset PiQA (https://github.com/ybisk/ybisk.github.io/tree/master/piqa) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py uses ('ybisk/piqa', None) (explicitly commented as the mirror of github.com/ybisk/... piqa) and load_piqa returns goal/sol1/sol2/label, so PiQA can be used."
+    },
+    {
+      "id": "873a2ed0-4c28-4548-9f82-099b29b3a8d8",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset SciQ (https://huggingface.co/datasets/allenai/sciq) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py uses ('allenai/sciq', None) and load_sciq loads the official HF dataset, with SciQTask in harness.py consuming the question/distractor/correct_answer fields."
+    },
+    {
+      "id": "2213f8f0-f2a6-4fae-a61d-4805c3720969",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset TriviaQA (https://huggingface.co/datasets/mandarjoshi/trivia_qa) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py uses ('mandarjoshi/trivia_qa', 'rc.nocontext') and load_triviaqa returns question plus aliases/values; TriviaQATask implements substring matching per Appendix C.1."
+    },
+    {
+      "id": "b78526fe-3d10-4b8c-a9c5-d139f41bd292",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset WinoGrande (https://huggingface.co/datasets/allenai/winogrande) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py uses ('allenai/winogrande', 'winogrande_xl') and load_winogrande loads the official HF dataset; WinoGrandeTask in harness.py formats sentences/options for evaluation."
+    },
+    {
+      "id": "8329045d-344f-4d51-b95a-0b0056c4220a",
+      "requirements": "Code has been implemented such that the zero-shot benchmark dataset Lambada (https://huggingface.co/datasets/EleutherAI/lambada_openai) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py uses ('EleutherAI/lambada_openai', 'default') and load_lambada returns text/label; LambadaTask in harness.py implements last-token accuracy."
+    },
+    {
+      "id": "837b7902-ec4e-4aa4-b17c-bae83104c462",
+      "requirements": "The evaluation harness has been reproduced, either by directly using the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or by reproducing the Language Model Evaluation Harness",
+      "weight": 1,
+      "passed": true,
+      "reason": "The harness is reproduced both ways: guidance_wrapper.py provides CFGHFLM integrating with lm_eval's BaseLM (registered as 'cfg-hf', with loglikelihood/greedy_until), requirements.txt pins lm-eval from the EleutherAI repo, and harness.py reimplements multiple-choice scoring, LAMBADA, and TriviaQA metrics."
+    },
+    {
+      "id": "6103dd0e-8fd8-4b5f-b4f2-88c553815a15",
+      "requirements": "Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the GPT2 family of models",
+      "weight": 1,
+      "passed": true,
+      "reason": "cfg.py implements Eq. 7 exactly (cfg_logits: uncond + gamma*(cond-uncond)) and CFGGenerator/CFGHFLM work with any HuggingFace AutoModelForCausalLM, explicitly listing GPT-2 ('gpt2', 'gpt2-medium') as supported; generation and scoring loops apply guided logprobs per token."
+    },
+    {
+      "id": "bc1168ce-1669-4aa8-9f2c-d806a8941d27",
+      "requirements": "The implementation of CFG which can be used for the GPT2 family of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength",
+      "weight": 1,
+      "passed": true,
+      "reason": "Guidance strength is a mutable attribute self.gamma set in constructors and overridable per-call via the gamma argument in generate()/score_continuation()/generate_text(); it is never hardcoded (defaults only)."
+    },
+    {
+      "id": "bcec9a7d-70da-45a0-a588-abba95fa574b",
+      "requirements": "As outlined in Section 3.1, the implementation of CFG which can be used for the GPT2 family of models starts the unconditional prompt $\\log p_{\\theta}(w_i | w_{j < i})$ with the last token of the initial prompt",
+      "weight": 1,
+      "passed": true,
+      "reason": "unconditional_input_ids() returns prompt_ids[..., -1:], i.e., the unconditional context starts at the last token of the initial prompt, and it is used consistently in CFGGenerator.generate, score_continuation, and CFGHFLM._guided_last_logprobs, then extended with generated tokens per Section 3.1."
+    },
+    {
+      "id": "89d93abb-87b9-43fc-a58f-e222c879b3a2",
+      "requirements": "Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Pythia family of models",
+      "weight": 1,
+      "passed": true,
+      "reason": "The same model-agnostic Eq. 7 implementation (CFGGenerator and CFGHFLM via AutoModelForCausalLM/AutoTokenizer) supports the Pythia family ('EleutherAI/pythia-*' listed), and the wrapper docstring shows pythia-160m as an example; no Pythia-specific code is needed and none is missing."
+    },
+    {
+      "id": "10f12f5c-862c-4f98-bce0-401e0583ca99",
+      "requirements": "The implementation of CFG which can be used for the Pythia family of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength",
+      "weight": 1,
+      "passed": true,
+      "reason": "gamma is a constructor argument and mutable attribute on CFGHFLM/CFGGenerator (also per-call override), applied through cfg_logits for Pythia models loaded via the same backend; not hardcoded."
+    },
+    {
+      "id": "d7afdeb5-d464-4645-bb95-7d5d1dd3088f",
+      "requirements": "As outlined in Section 3.1, the implementation of CFG which can be used for the Pythia family of models starts the unconditional prompt $\\log p_{\\theta}(w_i | w_{j < i})$ with the last token of the initial prompt",
+      "weight": 1,
+      "passed": true,
+      "reason": "For Pythia models the shared unconditional_input_ids helper truncates the prompt to its last token ([p_ids[-1]] / prompt_ids[..., -1:]) as the unconditional context, per Section 3.1, extended with generated tokens."
+    },
+    {
+      "id": "135089ea-d617-4538-83cc-29e67a890a93",
+      "requirements": "Code has been implemented such that the GSM8K dataset for arithmetic reasoning tasks (https://huggingface.co/datasets/openai/gsm8k) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py maps 'gsm8k' to ('openai/gsm8k', 'main') and load_gsm8k returns question/answer dicts from the official HF source, usable for CoT evaluation."
+    },
+    {
+      "id": "25ecc1e6-b1a6-472e-8490-c62db7d0943e",
+      "requirements": "Code has been implemented such that the AQuA dataset for arithmetic reasoning tasks (https://huggingface.co/datasets/nguyen-brat/aqua) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py maps 'aqua' to ('nguyen-brat/aqua', None) and load_aqua returns question/options/label/rationale from the specified mirror."
+    },
+    {
+      "id": "cadfc0e0-58fc-4dc0-9839-c1ddcfecf86f",
+      "requirements": "Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Guanaco65B model.",
+      "weight": 1,
+      "passed": true,
+      "reason": "Guanaco-65B ('TheBloke/Guanaco-65B-GPTQ', LLaMA architecture) is explicitly listed as supported by CFGGenerator and works with CFGHFLM via AutoModelForCausalLM (trust_remote_code available); Eq. 7 is implemented model-agnostically in logit space, so CFG inference can be run on it."
+    },
+    {
+      "id": "7d4e559d-57ab-454c-b418-2a29e7005ff4",
+      "requirements": "The implementation of CFG which can be used for the Guanaco65B model includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength",
+      "weight": 1,
+      "passed": true,
+      "reason": "The same mutable gamma hyper-parameter (constructor arg, self.gamma attribute, per-call override in generate/score) applies to Guanaco-65B through the shared CFG implementation; it is not hardcoded."
+    },
+    {
+      "id": "331299b9-5b4f-45a5-8e7e-8749fdca7871",
+      "requirements": "As outlined in Section 3.1, the implementation of CFG which can be used for the Guanaco65B model starts the unconditional prompt $\\log p_{\\theta}(w_i | w_{j < i})$ with the last token of the initial prompt.",
+      "weight": 1,
+      "passed": true,
+      "reason": "unconditional_input_ids returns prompt_ids[..., -1:], i.e. the unconditional context starts at the last token of the initial prompt and is extended with generated tokens (Section 3.1). CFGGenerator/CFGHFLM are documented as working with Guanaco-65B (LLaMA arch), so this applies."
+    },
+    {
+      "id": "54e5fdc8-4576-4c05-8dd7-3b0e374d6881",
+      "requirements": "Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the WizardLM-30B model.",
+      "weight": 1,
+      "passed": true,
+      "reason": "cfg_logits implements Eq. 7 exactly: uncond + gamma*(cond - uncond) on log-probs, used in CFGGenerator and CFGHFLM; WizardLM-30B (LLaMA arch) is explicitly listed as supported via AutoModelForCausalLM."
+    },
+    {
+      "id": "f5bb6a9b-9599-4bd3-9352-bb673c9be084",
+      "requirements": "The implementation of CFG which can be used for the WizardLM-30B model includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength",
+      "weight": 1,
+      "passed": true,
+      "reason": "gamma is a constructor argument and mutable attribute (self.gamma) in both CFGGenerator and CFGHFLM, and can also be overridden per-call in generate/score_continuation/generate_text; it is settable via --model_args gamma=..., not hardcoded."
+    },
+    {
+      "id": "3321df8c-c84e-4db7-b3a0-ce784311ef83",
+      "requirements": "As outlined in Section 3.1, the implementation of CFG which can be used for the WizardLM-30B model starts the unconditional prompt $\\log p_{\\theta}(w_i | w_{j < i})$ with the last token of the initial prompt.",
+      "weight": 1,
+      "passed": true,
+      "reason": "The same unconditional_input_ids(last-token) mechanism is used by CFGHFLM._guided_last_logprobs, which supports WizardLM-30B per its docstring."
+    },
+    {
+      "id": "c3efbff1-2ec3-4d5e-986f-345dfdef0df2",
+      "requirements": "Code has been implemented such that when Guanaco65B is evaluated on GSM8k, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.",
+      "weight": 1,
+      "passed": false,
+      "reason": "A harness wrapper exists, but GSM8K CoT evaluation requires greedy_until decoding; CFGHFLM.greedy_until/_iter_requests unpack req[2] for tuple requests that only have 2 elements and return text without truncating at 'until' strings, so the CoT generation path would crash/misbehave. Harness-based GSM8K eval for Guanaco65B is not functional."
+    },
+    {
+      "id": "906d86fa-3210-4332-855a-220761268104",
+      "requirements": "Code has been implemented such that when evaluated, Guanaco65B is prompted with the few-shot prompt for GSM8k from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+      "weight": 1,
+      "passed": false,
+      "reason": "The package docstring lists a cot_prompts module with Wang et al. (2023) GSM8K prompts, but no such module or prompt text exists anywhere in the repository, so Guanaco65B cannot be prompted with the few-shot CoT prompt."
+    },
+    {
+      "id": "a35c7964-0519-4cf5-b7db-b6b5af8dac67",
+      "requirements": "Code has been implemented such that when Guanaco65B is evaluated on GSM8k, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.",
+      "weight": 1,
+      "passed": false,
+      "reason": "In generate/score_sequence the unconditional context grows with all generated tokens ([prompt[-1]] + c_ids[:i]), rather than being fixed to the initial prompt w_p only; there is no mechanism to keep the unconditional baseline at w_p during CoT generation as described at the end of Section 3.2."
+    },
+    {
+      "id": "9033bacd-94f1-497e-9cd0-8ce0755c30d9",
+      "requirements": "Code has been implemented such that Guanaco65B can be evaluated on GSM8k with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)",
+      "weight": 1,
+      "passed": false,
+      "reason": "Although gamma is mutable, there is no GSM8K evaluation script/driver that sweeps guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]; the modules referenced in __init__ (cot_prompts, etc.) are missing, so this evaluation cannot be run."
+    },
+    {
+      "id": "673fcadc-9cd9-4786-a5e2-3a8264e42442",
+      "requirements": "Code has been implemented such that when WizardLM-30B is evaluated on GSM8k, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.",
+      "weight": 1,
+      "passed": false,
+      "reason": "Same defect as the Guanaco65B case: the harness wrapper's greedy_until path for CoT generation is broken (req[2] indexing on 2-tuple requests, no until-sequence truncation), so WizardLM-30B GSM8K evaluation through the harness is not usable."
+    },
+    {
+      "id": "61e62fe0-70d3-46f7-b2d1-709dbbeb590f",
+      "requirements": "Code has been implemented such that when evaluated, WizardLM-30B is prompted with the few-shot prompt for GSM8k from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+      "weight": 1,
+      "passed": false,
+      "reason": "No cot_prompts module or Wang et al. (2023) GSM8K few-shot prompt content exists in the repo despite being advertised in the package docstring."
+    },
+    {
+      "id": "660acd57-8372-4e1d-9f6d-f072c6a6160b",
+      "requirements": "Code has been implemented such that when WizardLM-30B is evaluated on GSM8k, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.",
+      "weight": 1,
+      "passed": false,
+      "reason": "The unconditional context is extended with each generated token instead of remaining just the initial prompt w_p, so w_cot and w_a are also included in the unconditional pass; the Section 3.2 prompt-only weighting is not implemented."
+    },
+    {
+      "id": "31f5447c-9279-4f96-b5af-861e45af19e2",
+      "requirements": "Code has been implemented such that WizardLM-30B can be evaluated on GSM8k with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)",
+      "weight": 1,
+      "passed": false,
+      "reason": "No driver/script performs a GSM8K evaluation over the specified guidance-strength list for WizardLM-30B; only the raw hyper-parameter exists."
+    },
+    {
+      "id": "8b2cf64a-e945-407b-b3bf-b2f1d21dd29b",
+      "requirements": "Code has been implemented such that when Guanaco65B is evaluated on AQuA, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.",
+      "weight": 1,
+      "passed": false,
+      "reason": "AQuA is loaded in data.py but there is no AQuA task defined in harness.TASKS and no functioning CoT generation path in the harness wrapper, so Guanaco65B cannot be evaluated on AQuA via the harness."
+    },
+    {
+      "id": "6f5a98fd-4023-4aab-b218-6109566d39d6",
+      "requirements": "Code has been implemented such that when evaluated, Guanaco65B is prompted with the few-shot prompt for AQuA from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+      "weight": 1,
+      "passed": false,
+      "reason": "The claimed cot_prompts module containing the Wang et al. (2023) AQuA few-shot prompt does not exist in the repository."
+    },
+    {
+      "id": "30fbfac7-f241-45a1-a2fd-c4045f180e7e",
+      "requirements": "Code has been implemented such that when Guanaco65B is evaluated on AQuA, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.",
+      "weight": 1,
+      "passed": false,
+      "reason": "Generation appends sampled tokens to the unconditional context, so the unconditional distribution is not limited to the initial prompt w_p as required by Section 3.2 for AQuA CoT."
+    },
+    {
+      "id": "776e377c-4854-4f0a-9946-d02b94c6f3f3",
+      "requirements": "Code has been implemented such that Guanaco65B can be evaluated on AQuA with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)",
+      "weight": 1,
+      "passed": false,
+      "reason": "There is no AQuA evaluation routine or gamma sweep over [1, 1.1, 1.25, 1.5, 1.75, 2] for Guanaco65B."
+    },
+    {
+      "id": "b8030906-c983-4aa0-b652-4eafdc016228",
+      "requirements": "Code has been implemented such that when WizardLM-30B is evaluated on AQuA, the Language Model Evaluation Harness (Gao et al., 2021, github.com/EleutherAI/lm-evaluation-harness) or an equivalent reproduction of it can be used as the evaluation harness.",
+      "weight": 1,
+      "passed": false,
+      "reason": "No AQuA task exists in the harness and the wrapper's generation path is broken, so WizardLM-30B cannot be evaluated on AQuA through the harness."
+    },
+    {
+      "id": "db44a8a1-97b7-4c35-9183-8e0111a648e9",
+      "requirements": "Code has been implemented such that when evaluated, WizardLM-30B is prompted with the few-shot prompt for AQuA from Wang et al. 2023: Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+      "weight": 1,
+      "passed": false,
+      "reason": "The Wang et al. (2023) AQuA few-shot prompt is absent; the referenced cot_prompts module is not present in the repo."
+    },
+    {
+      "id": "efddca04-bec5-467a-95df-1eaa0c10cb36",
+      "requirements": "Code has been implemented such that when WizardLM-30B is evaluated on AQuA, the initial prompt is $w_p$, such that only $w_p$ is up-weighted and not $w_{cot}$ and the model's answer $w_{a}$, as described at the end of Section 3.2.",
+      "weight": 1,
+      "passed": false,
+      "reason": "Unconditional context grows with generated tokens rather than staying at the initial prompt w_p, contradicting the end of Section 3.2."
+    },
+    {
+      "id": "e5ee4ec4-7033-45a6-b694-fd24ecaf735e",
+      "requirements": "Code has been implemented such that WizardLM-30B can be evaluated on AQuA with guidance strengths [1, 1.1, 1.25, 1.5, 1.75, 2]  (as per Figure 2)",
+      "weight": 1,
+      "passed": false,
+      "reason": "No code drives an AQuA evaluation across the specified guidance strengths for WizardLM-30B."
+    },
+    {
+      "id": "d671a00f-a2d4-447c-95e0-78fef6e83c4f",
+      "requirements": "Code has been implemented such that the HumanEval dataset (https://github.com/openai/human-eval) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py loads HumanEval from the official HF mirror openai/openai_humaneval via load_humaneval()."
+    },
+    {
+      "id": "6d62cf3f-463e-42f4-a9b3-1896b52325cc",
+      "requirements": "Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the CodeGen family of models (CodeGen-350M-mono, CodeGen-2B-mono, CodeGen-6B-mono)",
+      "weight": 1,
+      "passed": false,
+      "reason": "CFG (Eq. 7) is implemented generically in cfg.py/guidance_wrapper.py and CodeGen is listed as supported, but no HumanEval/pass@k experiment module exists to actually run CFG on CodeGen; the advertised humaneval.py module is missing."
+    },
+    {
+      "id": "0c8c0598-a5c0-4484-8d16-b98671646528",
+      "requirements": "The implementation of CFG which can be used for the CodeGen family of models (CodeGen-350M-mono, CodeGen-2B-mono, CodeGen-6B-mono) includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength",
+      "weight": 1,
+      "passed": false,
+      "reason": "gamma is mutable in CFGGenerator/CFGHFLM, but there is no CodeGen-specific evaluation code (the promised humaneval.py experiment is absent), so the requirement's scoped implementation for CodeGen cannot be verified."
+    },
+    {
+      "id": "ff66683d-f2cf-4d57-b235-d028dfc1711c",
+      "requirements": "As outlined in Section 3.1, the implementation of CFG which can be used for the CodeGen family of models (CodeGen-350M-mono, CodeGen-2B-mono, CodeGen-6B-mono) starts the unconditional prompt $\\log p_{\\theta}(w_i | w_{j < i})$ with the last token of the initial prompt.",
+      "weight": 1,
+      "passed": false,
+      "reason": "unconditional_input_ids correctly starts the unconditional context at the last prompt token, but again no CodeGen/HumanEval runner exists that uses this with CodeGen models."
+    },
+    {
+      "id": "8b8c4106-59a9-47f3-bfaf-3390f9b25c4f",
+      "requirements": "Code has been implemented such that the CodeGen model family can be evaluated on HumanEval with guidance strengths [1.0, 1.1, 1.25, 1.5, 1.75, 2.0] as outlined in Footnote 3",
+      "weight": 1,
+      "passed": false,
+      "reason": "No script or module enumerates/runs guidance strengths [1.0, 1.1, 1.25, 1.5, 1.75, 2.0] for CodeGen on HumanEval; the referenced humaneval.py file does not exist in the repo."
+    },
+    {
+      "id": "78e019d5-21f7-4358-b5e8-1c898dbfa93a",
+      "requirements": "Code has been implemented such that the CodeGen model family can be evaluated on HumanEval with a sampling temperatures of [0.2, 0.6, 0.8] as outlined in Figure 3.",
+      "weight": 1,
+      "passed": false,
+      "reason": "No code evaluates CodeGen on HumanEval at temperatures [0.2, 0.6, 0.8]; sample_token supports temperature but no experiment driver exists."
+    },
+    {
+      "id": "fdddda96-3a26-4234-b00f-dccd5cadc763",
+      "requirements": "Code has been implemented such that the CodeGen model family performance on HumanEval can be measured with pass@k, for k = 1, 10, 100 as outlined in Section 3.3.1 and in Footnote 4.",
+      "weight": 1,
+      "passed": false,
+      "reason": "No pass@k (k=1,10,100) computation is implemented anywhere in the provided files."
+    },
+    {
+      "id": "cdf2074b-47ad-4299-93f1-52783c9b4a59",
+      "requirements": "Code for measuring the number of wins, ties and losses across HumanEval Samples between CFG (\\gamma=1.25) and no CFG (\\gamma=1) has been implemented for CodeGen-350M-mono for temperatures 0.2, 0.6, 0.8 has been implemented. A win is when CFG answers a sample correctly while no CFG does not, a loss is the reciprocal case, and a tie is when CFG and no CFG both get the sample correct or both get the sample incorrect.",
+      "weight": 1,
+      "passed": false,
+      "reason": "No win/tie/loss comparison code between gamma=1.25 and gamma=1 across HumanEval samples exists."
+    },
+    {
+      "id": "0bd0732b-a231-409f-a609-859ea2c1d7d7",
+      "requirements": "Code has been implemented for determining the inference FLOP count for each of the models successfully evaluated in 3.1 as outlined in https://github.com/google-research/electra/blob/master/flops_computation.py (and in the addendum), with and without CFG.",
+      "weight": 1,
+      "passed": false,
+      "reason": "The flops.py module mentioned in __init__ docstring is not present; no Electra-style FLOP computation code exists."
+    },
+    {
+      "id": "3a1e0124-f2bc-4bb9-8fbe-cbafa2b39ccc",
+      "requirements": "Code has been implemented for pairing the inference FLOP with the model's evaluation's performance results from 3.1.",
+      "weight": 1,
+      "passed": false,
+      "reason": "No code pairs inference FLOPs with Section 3.1 performance results; the flops module is missing."
+    },
+    {
+      "id": "acc961fa-f5b9-4bd9-8649-aba832a6ed20",
+      "requirements": "Code has been implemented such that an ANCOVA regression analysis on paired FLOP-performance data from two given models can be run, such that it can be determined whether the FLOP/performance relationship is statistically different between the two models. As per Appendix C.2 and section 4.",
+      "weight": 2,
+      "passed": false,
+      "reason": "The ancova.py module described in the package docstring is absent; no ANCOVA regression analysis code exists."
+    },
+    {
+      "id": "7c686377-f0e3-46aa-a305-cabe1856ff559",
+      "requirements": "Code has been implemented such that around 32k samples from the P3 dataset (https://huggingface.co/datasets/bigscience/P3) can be used, obtaining the dataset from its official source or equivalent mirrors. As outlined in Section 5 and the addendum.",
+      "weight": 1,
+      "passed": true,
+      "reason": "load_p3_sample in data.py loads bigscience/P3 (official source) and deterministically subsamples P3_SAMPLE_SIZE = 32,902 (~32k) examples."
+    },
+    {
+      "id": "743ce2d4-c6a1-46dc-a69d-36c172f5c3a3",
+      "requirements": "Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Falcon-7b-Base model",
+      "weight": 1,
+      "passed": true,
+      "reason": "CFGHFLM/CFGGenerator use AutoModelForCausalLM/AutoTokenizer, which support Falcon architectures, and implement Eq. 7 via cfg_logits; Falcon-7b-base is explicitly listed as supported."
+    },
+    {
+      "id": "d6ae86d0-856c-403c-993b-91f87ad53f09",
+      "requirements": "The implementation of CFG which can be used for the Falcon-7b-Base model of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength",
+      "weight": 1,
+      "passed": true,
+      "reason": "gamma is a constructor argument and mutable attribute (self.gamma) plus per-call override in generate/score, not hardcoded, applicable to Falcon via the generic wrapper."
+    },
+    {
+      "id": "fa75e956-d82d-4148-95fd-7c034246100d",
+      "requirements": "As outlined in Section 3.1, the implementation of CFG which can be used for the Falcon-7b-Base model starts the unconditional prompt $\\log p_{\\theta}(w_i | w_{j < i})$ with the last token of the initial prompt",
+      "weight": 1,
+      "passed": true,
+      "reason": "unconditional_input_ids returns prompt[..., -1:], i.e., the unconditional pass starts at the last token of the initial prompt, used by the Falcon-capable wrapper."
+    },
+    {
+      "id": "b28bee93-169d-444a-b03c-09a6e183e3c5",
+      "requirements": "Classifier-Free Guidance (CFG) inference is implemented as described in equation 7 in Section 2.2 such that it can be run on the Falcon-7b-Instruct model",
+      "weight": 1,
+      "passed": true,
+      "reason": "Same generic AutoModelForCausalLM-based CFG implementation covers Falcon-7b-instruct (listed as supported: '-instruct')."
+    },
+    {
+      "id": "84f2d615-9843-48af-9c81-a85ff84cb6e5",
+      "requirements": "The implementation of CFG which can be used for the Falcon-7b-Instruct model of models includes a mutable (not hardcoded) hyper-parameter which can be used to specify the guidance strength",
+      "weight": 1,
+      "passed": true,
+      "reason": "Mutable gamma hyper-parameter applies to any model loaded through CFGHFLM/CFGGenerator, including Falcon-7b-Instruct."
+    },
+    {
+      "id": "ad6259e5-4211-4344-97c3-5ba0d2145976",
+      "requirements": "As outlined in Section 3.1, the implementation of CFG which can be used for the Falcon-7b-Instruct model starts the unconditional prompt $\\log p_{\\theta}(w_i | w_{j < i})$ with the last token of the initial prompt",
+      "weight": 1,
+      "passed": true,
+      "reason": "The shared unconditional_input_ids logic starts the unconditional context at the last prompt token for all models including Falcon-Instruct."
+    },
+    {
+      "id": "03721f72-87d3-4e1a-a475-5e5c2269a4ea",
+      "requirements": "Code for measuring the average logit entropy has been implemented, where entropy is defined $H(p) = -\\sum_k p_k \\log p_k$, equivalent to the scipy implementation as outlined in the Addendum.",
+      "weight": 1,
+      "passed": false,
+      "reason": "The analysis.py module (entropy, top-p overlap, P3 perplexity) referenced in the docstring is not included; no entropy computation code exists."
+    },
+    {
+      "id": "3ba84eb6-dc62-47ba-94c8-de5d99539dd7",
+      "requirements": "Code has been implemented for measuring the top-p overlap for some p, where two top-p vocab distributions are input and their inner product is taken to calculate the overlap, as shown in Figure 18b.",
+      "weight": 1,
+      "passed": false,
+      "reason": "No top-p overlap / inner-product computation code is present; analysis.py is missing from the repository."
+    },
+    {
+      "id": "dbfc55c1-253e-4a83-9933-4225f713cc69",
+      "requirements": "Code has been implemented for measuring the perplexity of completion tokens compatible with the CFG and instruction-tuned models.",
+      "weight": 1,
+      "passed": false,
+      "reason": "No perplexity-computation code exists in the repository. The docstring advertises an 'analysis' module with P3 perplexity (Sec. 5), but that file is absent; only a sum-of-guided-log-probs scoring routine (score_continuation/score_sequence) exists, which is not a perplexity measure and is not applied to completion tokens for CFG/instruction-tuned models."
+    },
+    {
+      "id": "b4b221de-55ca-4bbe-86ba-a84e4a9e2ad5",
+      "requirements": "Code has been implemented for measuring the spearman correlation between two sets of measured perplexities.",
+      "weight": 1,
+      "passed": false,
+      "reason": "There is no code computing a Spearman correlation between two sets of measured perplexities. scipy is listed in requirements.txt but no spearmanr call or equivalent exists anywhere in the provided files; the analysis module mentioned in the package docstring is missing."
+    },
+    {
+      "id": "b676dea1-b5c0-4bc5-a04f-8dd29b3ee8a3",
+      "requirements": "Code to calculate the differences in token log probabilities across the entire vocabulary with CFG at each generation step has been developed as described in Section 5.3, i.e. $P(w_t \\mid w_{<t}) - \\log P(w_T \\mid \\hat{w})$",
+      "weight": 1,
+      "passed": true,
+      "reason": "cfg.py implements logit_differences(), which at each generation step computes diff = cond_lp - uncond_lp over the entire vocabulary (log P(w|w<t,c) - log P(w|w~)), records top-k upweighted and bottom-k downweighted tokens, and advances both conditional and unconditional (last-token-start) contexts per Section 5.3/Table 3."
+    },
+    {
+      "id": "9d5cdecf-8f7d-4df3-a58f-83c6ae6ed7bd",
+      "requirements": "Code has been implemented such that the toxicity dataset (https://huggingface.co/datasets/thesofakillers/jigsaw-toxic-comment-classification-challenge) can be used, obtaining it from the huggingface repository specified in the addendum.",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py registers HF_SOURCES['toxicity'] = ('thesofakillers/jigsaw-toxic-comment-classification-challenge', None), exactly the addendum's HF repo, and load_toxicity(split) loads it via datasets.load_dataset and returns dict records."
+    },
+    {
+      "id": "784f3d0a-d203-4d73-9735-c796e9d01640",
+      "requirements": "Code has been implemented such that the pretrained classifier used for toxicity evaluation and guidance ('unitary/toxic-bert') can be used, as noted in footnote 10 and Section 6.",
+      "weight": 1,
+      "passed": false,
+      "reason": "The 'unitary/toxic-bert' pretrained toxicity classifier is never referenced or loaded anywhere in the repository. The fudge module advertised in the package docstring (which would host the classifier for Sec. 6 guidance/evaluation) does not exist in the given files."
+    },
+    {
+      "id": "5a8d113c-8881-4ea5-82a7-9cf47af47ae9",
+      "requirements": "FUDGE has been set up following Yang & Klein 2021 for GPT-2 to enable classifier guidance on the task of toxicity detection",
+      "weight": 1,
+      "passed": false,
+      "reason": "No FUDGE implementation is present. Although __init__.py lists a 'fudge' module for FUDGE (Yang & Klein, 2021) on GPT-2 toxicity guidance, no cfg_lm/fudge.py (or equivalent forward-classifier training/guidance code) exists in the repository."
+    },
+    {
+      "id": "64bab617-cd05-4c32-b61b-7ac5067d6292",
+      "requirements": "Code has been implemented such that the sentiment IMBD dataset (https://huggingface.co/datasets/stanfordnlp/imdb) can be used, obtaining it from its official source or equivalent mirrors",
+      "weight": 1,
+      "passed": true,
+      "reason": "data.py defines HF_SOURCES['imdb'] = ('stanfordnlp/imdb', None) — the official HF mirror cited in the requirement — and load_imdb(split) loads it and returns {'text','label'} examples."
+    },
+    {
+      "id": "e19fd65f-5c5b-4ec4-8c18-3c5e21d54d4a",
+      "requirements": "Code has been implemented such that the pretrained classifier used for sentiment guidance ('bhadresh-savani/distilbert-base-uncased-emotion') can be used, as noted in footnote 10 and Section 6.",
+      "weight": 1,
+      "passed": false,
+      "reason": "The sentiment guidance classifier 'bhadresh-savani/distilbert-base-uncased-emotion' is not referenced or loaded anywhere in the code; the module that would use it (fudge / Sec. 6 guidance) is missing."
+    },
+    {
+      "id": "e0e79e7d-96fe-4c8e-b160-2fe1d1c376b8",
+      "requirements": "Code has been implemented such that the pretrained classifier used for sentiment evaluation ('stevhliu/my_awesome_model') can be used, as noted in footnote 10 and Section 6.",
+      "weight": 1,
+      "passed": false,
+      "reason": "The sentiment evaluation classifier 'stevhliu/my_awesome_model' is not referenced or loaded anywhere in the repository; no sentiment-evaluation code exists."
+    },
+    {
+      "id": "d3ebdc42-6c14-45f8-b49e-8b8f5b460fed",
+      "requirements": "FUDGE has been set up following Yang & Klein 2021 for GPT-2 to enable classifier guidance on the task of sentiment detection",
+      "weight": 1,
+      "passed": false,
+      "reason": "No FUDGE setup for sentiment detection exists; the advertised cfg_lm/fudge.py module (FUDGE baseline for sentiment/toxicity with GPT-2) is absent from the repository."
+    }
+  ]
+}

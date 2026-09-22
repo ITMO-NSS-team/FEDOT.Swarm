@@ -75,6 +75,27 @@ board = blackboard(
 out = await board.run({"topic": "tea"}, goal="report", bind={"llm": backend})
 ```
 
+## Spending
+
+`SpendLimit` caps what a run may spend, in tokens, requests, or USD at a `Price` per million
+tokens. Past the cap it stops calling nodes at all, so the board goes quiet and the run ends
+with its store intact instead of with a pile of errors:
+
+```python
+from fedotmas.ext.plugins import ConcurrencyLimit
+from fedotmas_llm import Price, SpendLimit
+
+limit = SpendLimit(backend, usd=0.01, price=Price(input=0.03, output=0.13))
+out = await board.run(seed, goal="report", bind={"llm": backend},
+                      plugins=[ConcurrencyLimit(3), limit])
+print(limit.report())
+```
+
+It reads the backend's own meter, counting from the moment it is built, so whatever was spent
+configuring the system does not eat the run's budget. Nodes are black boxes to the engine, so
+a spent budget stops the code rules too: the cap is on the run, not on the provider. The check
+runs before each call, which means calls already in flight still land.
+
 ## Serving
 
 Run a manifest over HTTP/SSE and MCP under the `serve` extra (`pip install fedotmas-llm[serve]`). MCP, file/URI, and A2A capabilities wire by reference. Early.
